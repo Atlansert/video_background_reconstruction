@@ -88,6 +88,71 @@ def _clear_generated(directory: Path, suffixes=(".png",)):
             path.unlink()
 
 
+def _build_opening_hints(values, preserved_dir: Path) -> list | None:
+    """Pair preserved fixed-structure masks with reconstruction poses."""
+    import cv2
+
+    frame_paths = values["frame_paths"]
+    coords = values["original_coords"]
+    extrinsics = values["extrinsics"]
+    intrinsics = values["intrinsics"]
+    depth = values["depth"][..., 0]
+    index_by_stem = {int(Path(path).stem): index for index, path in enumerate(frame_paths)}
+    hints = []
+    for mask_path in sorted(preserved_dir.glob("*.png")):
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None or not np.count_nonzero(mask):
+            continue
+        index = index_by_stem.get(int(mask_path.stem))
+        if index is None:
+            continue
+        hints.append(
+            {
+                "extrinsic": extrinsics[index],
+                "intrinsic": intrinsics[index],
+                "original_coords": coords[index],
+                "depth": depth[index],
+                "mask": mask > 0,
+            }
+        )
+    return hints or None
+
+
+def _load_opening_hints(output_dir: Path, cfg, all_frames: Path, slam_result: dict):
+    """Reuse or generate fixed-structure masks for wall-opening carving."""
+    geometry_cfg = cfg.get("geometry", {})
+    if not geometry_cfg.get("carve_openings", True):
+        return None
+    prompts = geometry_cfg.get(
+        "opening_prompts",
+        [
+            "door",
+            "window",
+            "staircase",
+            "stairs",
+            "kitchen cabinet",
+            "refrigerator",
+            "sink",
+        ],
+    )
+    values = np.load(slam_result["reconstruction"])
+    frame_ids = [int(value) for value in values["frame_ids"]]
+    expected = {"frame_ids": frame_ids, "prompts": prompts}
+    masks_out = output_dir / "masks_openings"
+    manifest_path = masks_out / "manifest.json"
+    if manifest_path.exists():
+        try:
+            if json.loads(manifest_path.read_text(encoding="utf-8")) == expected:
+                return _build_opening_hints(values, masks_out / "preserved")
+        except (OSError, json.JSONDecodeError):
+            pass
+    SegmentationAdapter(cfg["segmentation"], PROJECT_ROOT).run_opening_masks(
+        frame_ids, all_frames, masks_out, output_dir / "logs", prompts
+    )
+    manifest_path.write_text(json.dumps(expected, indent=2), encoding="utf-8")
+    return _build_opening_hints(values, masks_out / "preserved")
+
+
 def _ensure_frames(video_path, info, all_frames, keyframes, stride):
     expected_keyframes = len(set(range(0, info["frames"], stride)) | {info["frames"] - 1})
     all_count = len(list(all_frames.glob("*.jpg")))
@@ -220,12 +285,15 @@ def run(cfg, stop_after="all", force=False):
             print(f"Reconstruction complete: {output_dir}")
             return
 
+        geometry_cfg = cfg.get("geometry", {})
+        opening_hints = _load_opening_hints(output_dir, cfg, all_frames, slam_result)
         geometry_report = build_mesh(
             points,
             colors,
             output_dir,
-            cfg.get("geometry", {}),
+            geometry_cfg,
             reconstruction_path=slam_result["reconstruction"],
+            opening_hints=opening_hints,
         )
         write_html(
             points,
@@ -234,7 +302,11 @@ def run(cfg, stop_after="all", force=False):
             mesh_path=output_dir / "background_mesh.ply",
             extrinsics=slam_result["extrinsics"],
         )
-        status["stages"]["geometry"] = {"state": "complete", **geometry_report}
+        status["stages"]["geometry"] = {
+            "state": "complete",
+            "opening_hints": len(opening_hints) if opening_hints else 0,
+            **geometry_report,
+        }
         status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
         if stop_after == "geometry":
             status["state"] = "stopped_after_geometry"

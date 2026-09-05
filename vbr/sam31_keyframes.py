@@ -59,7 +59,7 @@ def run(args: argparse.Namespace) -> None:
     prompts = json.loads(args.prompts_json)
     preserve_prompts = json.loads(args.preserve_prompts_json)
     prompt_thresholds = json.loads(args.prompt_thresholds_json)
-    if not isinstance(prompts, list) or not prompts:
+    if not isinstance(prompts, list) or (not prompts and not args.allow_empty_union):
         raise ValueError("--prompts-json must contain a non-empty JSON list")
     if not isinstance(preserve_prompts, list):
         raise ValueError("--preserve-prompts-json must contain a JSON list")
@@ -193,7 +193,7 @@ def run(args: argparse.Namespace) -> None:
         + int(args.append_existing),
     }
     (out_dir / "sam31_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    if report["nonempty_frames"] == 0:
+    if report["nonempty_frames"] == 0 and not args.allow_empty_union:
         raise RuntimeError("SAM 3.1 produced no foreground masks for any configured prompt")
 
 
@@ -211,6 +211,12 @@ def main() -> None:
     parser.add_argument("--preserve-dilation", type=int, default=7)
     parser.add_argument("--keep-prompt-masks", action="store_true")
     parser.add_argument("--append-existing", action="store_true")
+    parser.add_argument(
+        "--allow-empty-union",
+        action="store_true",
+        help="succeed even when the remove-prompt union is empty (used when "
+        "only preserve prompts run, e.g. for wall-opening carving)",
+    )
     run(parser.parse_args())
 
 

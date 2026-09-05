@@ -150,6 +150,37 @@ def frame_rgb_in_model_space(
     return canvas
 
 
+def _model_space_size(model_mode: str, width: int, height: int) -> tuple:
+    """(height, width) of VGGT model-space images for the preprocessing mode.
+
+    Mirrors the geometry of vggt.utils.load_fn: square mode letterboxes into
+    518x518; crop mode resizes width to 518 and rounds the height to a
+    multiple of 14.
+    """
+    if model_mode == "square":
+        return 518, 518
+    target = 518
+    return round(height * (target / width) / 14) * 14, target
+
+
+def _model_space_coords(
+    model_mode: str, width: int, height: int, model_width: int, model_height: int
+) -> list:
+    """Content bounds [x1, y1, x2, y2] of the frame inside the model canvas."""
+    if model_mode == "square":
+        larger = max(width, height)
+        scale = model_width / larger
+        left = (larger - width) // 2
+        top = (larger - height) // 2
+        return [
+            left * scale,
+            top * scale,
+            (left + width) * scale,
+            (top + height) * scale,
+        ]
+    return [0.0, 0.0, float(model_width), float(model_height)]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--frames", required=True)
@@ -175,6 +206,13 @@ def main() -> None:
         default="square",
         help="square: letterbox to 518x518 (matches vggt_direct); "
         "crop: resize width to 518 keeping aspect (upstream default)",
+    )
+    parser.add_argument(
+        "--mask-aware-matching",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="exclude foreground pixels from submap scale estimation, "
+        "submap point filtering and loop-closure retrieval embeddings",
     )
     args = parser.parse_args()
 
@@ -204,6 +242,11 @@ def main() -> None:
     if not paths:
         raise RuntimeError("No numeric JPEG frames found")
 
+    first_image = cv2.imread(str(paths[0]))
+    if first_image is None:
+        raise RuntimeError(f"Cannot read frame {paths[0]}")
+    original_height, original_width = first_image.shape[:2]
+
     device = "cuda"
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
     checkpoint = Path(args.checkpoint).resolve()
@@ -218,6 +261,38 @@ def main() -> None:
     model.eval().to(dtype=dtype, device=device)
 
     solver = Solver(init_conf_threshold=args.conf_threshold, lc_thres=args.lc_thres)
+
+    # Model-space geometry shared by masking, retrieval and the NPZ export.
+    model_height, model_width = _model_space_size(
+        args.model_mode, original_width, original_height
+    )
+    base_coords = _model_space_coords(
+        args.model_mode, original_width, original_height, model_width, model_height
+    )
+    masks_root = Path(args.masks)
+
+    def model_space_mask(frame_name: str) -> np.ndarray:
+        frame_id = Path(frame_name).stem
+        return mask_in_model_space(
+            masks_root / f"{frame_id}.png",
+            base_coords,
+            model_height,
+            model_width,
+        )
+
+    if args.mask_aware_matching:
+        # Blank foreground pixels before SALAD retrieval so loop-closure
+        # similarity is driven by the room, not by furniture that moved.
+        original_retrieval = solver.image_retrieval.get_all_submap_embeddings
+
+        def foreground_free_retrieval(submap):
+            frames = submap.get_all_frames().clone()
+            for index, name in enumerate(submap.img_names):
+                mask = torch.from_numpy(model_space_mask(name) > 0).to(frames.device)
+                frames[index].masked_fill_(mask, 0.5)
+            return solver.image_retrieval.get_batch_descriptors(frames)
+
+        solver.image_retrieval.get_all_submap_embeddings = foreground_free_retrieval
 
     # Capture the raw per-submap VGGT outputs (depth/confidence/intrinsics)
     # before they are consumed by add_points; Submap does not retain depth.
@@ -235,6 +310,26 @@ def main() -> None:
                 "intrinsic": np.asarray(pred_dict["intrinsic"], dtype=np.float64),
             }
         )
+        if args.mask_aware_matching:
+            # Zero foreground confidence before the solver stores it: the
+            # submap confidence threshold, the inter-submap scale estimation
+            # (good_mask in Solver.add_edge) and the submap point filtering
+            # then all ignore foreground pixels. The stash above keeps the
+            # raw confidence for the NPZ/TSDF interface, which applies the
+            # foreground masks itself.
+            masks = np.stack(
+                [model_space_mask(name) > 0 for name in working.img_names]
+            )
+            if masks.shape == pred_dict["depth_conf"].shape:
+                pred_dict["depth_conf"] = np.where(
+                    masks, np.float32(0.0), pred_dict["depth_conf"]
+                ).astype(np.float32)
+            else:
+                print(
+                    f"mask-aware matching skipped for submap {working.get_id()}: "
+                    f"mask shape {masks.shape} != conf shape "
+                    f"{pred_dict['depth_conf'].shape}"
+                )
         return original_add_points(pred_dict)
 
     solver.add_points = stash_and_add_points
@@ -304,30 +399,13 @@ def main() -> None:
     submap_scales = {}
     exported_frame_ids = set()
 
-    first_image = cv2.imread(stashes[0]["frame_names"][0])
-    if first_image is None:
-        raise RuntimeError("Cannot read a stashed frame to determine model space")
-    original_height, original_width = first_image.shape[:2]
-    model_height = int(stashes[0]["depth"].shape[1])
-    model_width = int(stashes[0]["depth"].shape[2])
-    if args.model_mode == "square":
-        if model_height != model_width:
-            raise RuntimeError(
-                f"Square mode expected {518}x{518} depth maps, got "
-                f"{model_height}x{model_width}"
-            )
-        larger = max(original_width, original_height)
-        scale = model_width / larger
-        left = (larger - original_width) // 2
-        top = (larger - original_height) // 2
-        base_coords = [
-            left * scale,
-            top * scale,
-            (left + original_width) * scale,
-            (top + original_height) * scale,
-        ]
-    else:
-        base_coords = [0.0, 0.0, float(model_width), float(model_height)]
+    stash_height = int(stashes[0]["depth"].shape[1])
+    stash_width = int(stashes[0]["depth"].shape[2])
+    if (stash_height, stash_width) != (model_height, model_width):
+        raise RuntimeError(
+            f"Model space mismatch: predictions are {stash_height}x{stash_width}, "
+            f"expected {model_height}x{model_width} for {args.model_mode} mode"
+        )
 
     for submap in solver.map.ordered_submaps_by_key():
         if submap.get_lc_status():
@@ -354,17 +432,18 @@ def main() -> None:
                 # Overlap frames close consecutive submaps; export each once.
                 continue
             exported_frame_ids.add(frame_id)
+            frame_name = stash["frame_names"][index]
             cam_to_world = rigid_from_similarity(homography, scale)
             world_to_cam = np.linalg.inv(cam_to_world)
             extrinsics_parts.append(world_to_cam[:3])
             intrinsics_parts.append(stash["intrinsic"][index])
             depth_parts.append(stash["depth"][index] * np.float32(scale))
             confidence_parts.append(stash["depth_conf"][index])
-            frame_path_parts.append(stash["frame_names"][index])
+            frame_path_parts.append(frame_name)
             frame_id_parts.append(frame_id)
             mask_parts.append(
                 mask_in_model_space(
-                    Path(args.masks) / f"{frame_id:06d}.png",
+                    masks_root / f"{Path(frame_name).stem}.png",
                     base_coords,
                     model_height,
                     model_width,
@@ -452,6 +531,8 @@ def main() -> None:
         "keyframes_after_cap": len(keyframes),
         "submap_count": len(submap_scales),
         "loop_closures": int(solver.graph.get_num_loops()),
+        "mask_aware_matching": bool(args.mask_aware_matching),
+        "model_mode": args.model_mode,
         "submap_scales": submap_scales,
         "frame_ids": frame_id_parts,
         "confidence_percentile": args.confidence_percentile,

@@ -33,6 +33,10 @@ segmentation:
     - chair
     - table
     - vase
+    - cup
+    - bottle
+    - table lamp
+    - doormat
     - coat rack
     - shelving unit
     - trash can
@@ -79,13 +83,17 @@ slam:
   salad_checkpoint: checkpoints/salad/dino_salad.ckpt
   dinov2_checkpoint: checkpoints/dinov2/dinov2_vitb14_pretrain.pth
   model_mode: square
+  mask_aware_matching: true
 geometry:
+  carve_openings: true
+  opening_prompts: [door, window, staircase, stairs, kitchen cabinet, refrigerator, sink]
   voxel_size: 0.03
   plane_distance_threshold: 0.04
   min_plane_points: 1000
   max_planes: 12
   max_walls: 8
   min_wall_width: 0.3
+  plan_wall_detection: false
   footprint_wall_fallback: true
   poisson_depth: 8
   mesh_max_points: 150000

@@ -78,6 +78,9 @@ class SLAMAdapter:
                 str(self.cfg.get("max_loops", 1)),
                 "--model-mode",
                 str(self.cfg.get("model_mode", "square")),
+                "--mask-aware-matching"
+                if self.cfg.get("mask_aware_matching", True)
+                else "--no-mask-aware-matching",
             ]
             for flag, key, fallback in (
                 (

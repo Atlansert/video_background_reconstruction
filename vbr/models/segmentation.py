@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -12,6 +13,75 @@ class SegmentationAdapter:
     def __init__(self, cfg: dict, project_root: Path):
         self.cfg = cfg
         self.project_root = Path(project_root).resolve()
+
+    def _environment(self) -> tuple[str, dict, Path]:
+        env_name = self.cfg.get("environment", "vbr-seg")
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = str(self.cfg.get("cuda_visible_devices", "7"))
+        env["PYTHONUNBUFFERED"] = "1"
+        checkpoint = self.project_root / self.cfg.get(
+            "sam3_checkpoint", "checkpoints/sam3.1/sam3.1_multiplex.pt"
+        )
+        if not checkpoint.exists():
+            raise FileNotFoundError(checkpoint)
+        return env_name, env, checkpoint
+
+    def run_opening_masks(
+        self,
+        frame_ids: list[int],
+        all_frames_dir: Path,
+        output_dir: Path,
+        logs_dir: Path,
+        prompts: list[str],
+    ) -> Path:
+        """Run preserve-only SAM 3.1 prompts on the reconstruction frames.
+
+        Produces ``<output_dir>/preserved/<frame_id>.png`` masks for the fixed
+        structures (door, window, stairs, cabinets, ...) that the geometry
+        stage projects onto wall grids to carve openings and occluded cells.
+        """
+        env_name, env, checkpoint = self._environment()
+        output_dir = output_dir.resolve()
+        subset_dir = output_dir / "frames_subset"
+        subset_dir.mkdir(parents=True, exist_ok=True)
+        for frame_id in frame_ids:
+            source = all_frames_dir / f"{frame_id:06d}.jpg"
+            if not source.exists():
+                raise FileNotFoundError(source)
+            destination = subset_dir / source.name
+            if not destination.exists():
+                shutil.copy(source, destination)
+
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        command = [
+            "conda",
+            "run",
+            "--no-capture-output",
+            "-n",
+            env_name,
+            "python",
+            "-m",
+            "vbr.sam31_keyframes",
+            "--frames",
+            str(subset_dir.resolve()),
+            "--output",
+            str(output_dir),
+            "--checkpoint",
+            str(checkpoint),
+            "--prompts-json",
+            "[]",
+            "--preserve-prompts-json",
+            json.dumps(prompts),
+            "--prompt-thresholds-json",
+            json.dumps(self.cfg.get("prompt_thresholds", {})),
+            "--threshold",
+            str(self.cfg.get("sam3_threshold", 0.45)),
+            "--max-objects",
+            str(self.cfg.get("sam3_max_objects", 64)),
+            "--allow-empty-union",
+        ]
+        self._run_logged(command, logs_dir / "sam31_openings.log", env)
+        return output_dir / "preserved"
 
     def run(
         self,

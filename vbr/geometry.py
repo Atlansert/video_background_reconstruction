@@ -76,6 +76,130 @@ def fit_planes(points, gravity, threshold=0.05, min_points=500, max_planes=12):
     return planes
 
 
+def _plan_axes(gravity):
+    """Orthonormal (axis_u, axis_v) spanning the horizontal plane."""
+    reference = np.array([1.0, 0.0, 0.0])
+    if abs(np.dot(reference, gravity)) > 0.85:
+        reference = np.array([0.0, 0.0, 1.0])
+    axis_u = np.cross(gravity, reference)
+    axis_u /= np.linalg.norm(axis_u) + 1e-12
+    axis_v = np.cross(gravity, axis_u)
+    axis_v /= np.linalg.norm(axis_v) + 1e-12
+    return axis_u, axis_v
+
+
+def fit_wall_lines(points, gravity, floor_level, ceiling_level, cfg):
+    """Detect vertical walls as lines in the horizontal footprint plane.
+
+    2D RANSAC on mid-height background points (floor and ceiling slabs
+    excluded). Walls show up as straight lines in the plan view even when 3D
+    RANSAC prefers the larger horizontal planes, which is why the previous
+    pipeline fell back to footprint walls. Room-relative thresholds keep the
+    behaviour stable across videos with different monocular scales.
+
+    Returns walls as dicts with a 3D unit normal pointing away from the
+    room interior, the plane offset, and the tangent extent [low, high].
+    """
+    points = np.asarray(points, dtype=np.float64)
+    room_height = float(floor_level - ceiling_level)
+    if room_height <= 0:
+        return []
+    heights = points @ gravity
+    middle_low = ceiling_level + 0.15 * room_height
+    middle_high = floor_level - 0.15 * room_height
+    middle = (heights >= middle_low) & (heights <= middle_high)
+    middle_points = points[middle]
+    min_support = max(
+        int(cfg.get("wall_min_support_points", 120)),
+        int(len(middle_points) * cfg.get("wall_min_support_fraction", 0.03)),
+    )
+    if len(middle_points) < min_support:
+        return []
+
+    axis_u, axis_v = _plan_axes(gravity)
+    uv = np.stack([middle_points @ axis_u, middle_points @ axis_v], axis=1)
+    threshold = cfg.get("wall_inlier_room_fraction", 0.12) * room_height
+    iterations = int(cfg.get("wall_ransac_iterations", 400))
+    rng = np.random.default_rng(cfg.get("wall_ransac_seed", 7))
+
+    candidates = []
+    for _ in range(iterations):
+        first, second = rng.choice(len(uv), size=2, replace=False)
+        direction = uv[second] - uv[first]
+        length = np.linalg.norm(direction)
+        if length < 0.5 * room_height:
+            continue
+        direction /= length
+        normal_2d = np.array([-direction[1], direction[0]])
+        distance = (uv - uv[first]) @ normal_2d
+        inliers = np.abs(distance) < threshold
+        count = int(np.count_nonzero(inliers))
+        if count < min_support:
+            continue
+        candidates.append((count, normal_2d, float(uv[first] @ normal_2d), inliers))
+        if count >= 0.6 * len(uv):
+            break
+
+    accepted = []
+    for count, normal_2d, offset, inliers in sorted(
+        candidates, key=lambda item: item[0], reverse=True
+    ):
+        duplicate = False
+        for kept in accepted:
+            angle = abs(float(np.dot(normal_2d, kept["normal_2d"])))
+            if angle > np.cos(np.radians(8.0)) and abs(offset - kept["offset"]) < threshold:
+                duplicate = True
+                break
+            # Same line, opposite normal sign.
+            if angle < -np.cos(np.radians(8.0)) and abs(offset + kept["offset"]) < threshold:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        accepted.append(
+            {"normal_2d": normal_2d, "offset": offset, "inliers": inliers, "count": count}
+        )
+
+    min_width = max(
+        float(cfg.get("min_wall_width", 0.3)), 0.5 * room_height
+    )
+    max_gap = cfg.get("wall_max_gap_room_fraction", 0.5) * room_height
+    walls = []
+    for line in accepted[: int(cfg.get("max_walls", 8))]:
+        inliers = line["inliers"]
+        normal = axis_u * line["normal_2d"][0] + axis_v * line["normal_2d"][1]
+        unoriented_offset = line["offset"]
+        # Orient the normal away from the room interior (the mid-height
+        # cloud's centroid lies on the interior side), so "behind the wall" —
+        # where see-through evidence is collected — is the positive side.
+        if float(np.mean(middle_points @ normal)) > unoriented_offset:
+            normal = -normal
+            offset = -unoriented_offset
+        else:
+            offset = unoriented_offset
+        tangent = np.cross(gravity, normal)
+        tangent /= np.linalg.norm(tangent) + 1e-12
+        along = np.sort(middle_points[inliers] @ tangent)
+        # Keep only the longest contiguous run of support: a real wall's
+        # inliers are contiguous, while accidental collinear points from
+        # different rooms leave long gaps along the line.
+        splits = np.flatnonzero(np.diff(along) > max_gap)
+        run = max(np.split(along, splits + 1), key=len)
+        low, high = np.quantile(run, [0.02, 0.98])
+        if high - low < min_width or len(run) < min_support:
+            continue
+        walls.append(
+            {
+                "normal": normal,
+                "offset": offset,
+                "low": float(low),
+                "high": float(high),
+                "support": int(len(run)),
+            }
+        )
+    return walls
+
+
 def _quad(vertices, color):
     import open3d as o3d
 
@@ -88,7 +212,244 @@ def _quad(vertices, color):
     return mesh
 
 
-def build_structural_mesh(points, colors, planes, gravity, cfg):
+def _emit_wall(
+    points,
+    colors,
+    gravity,
+    axis_u,
+    axis_v,
+    floor_level,
+    ceiling_level,
+    wall,
+    cfg,
+    opening_hints=None,
+):
+    """Emit one wall as a single quad, or as strips around carved openings.
+
+    Two opening mechanisms combine:
+    - See-through evidence: a large hole in the wall's point coverage with
+      background points observed *behind* the wall (doorway, stairwell).
+    - Preserve-mask hints: per-frame fixed-structure masks (door, window,
+      stairs, cabinets, ...) projected onto the wall grid with depth-based
+      visibility; cells covered by a majority of observing views are carved.
+
+    Without such evidence an unobserved region stays solid, so occlusion
+    gaps never punch holes.
+    """
+    import open3d as o3d
+
+    normal = wall["normal"]
+    offset = wall["offset"]
+    tangent = np.cross(gravity, normal)
+    tangent /= np.linalg.norm(tangent) + 1e-12
+    room_height = float(floor_level - ceiling_level)
+
+    band = max(
+        float(cfg.get("voxel_size", 0.03)) * 2.0,
+        cfg.get("wall_band_room_fraction", 0.15) * room_height,
+    )
+    distances = points @ normal - offset
+    t_values = points @ tangent
+    h_values = points @ gravity
+    inside = (
+        (np.abs(distances) <= band)
+        & (t_values >= wall["low"])
+        & (t_values <= wall["high"])
+        & (h_values >= ceiling_level)
+        & (h_values <= floor_level)
+    )
+    behind = distances > band
+
+    cell = max(cfg.get("wall_cell_room_fraction", 0.2) * room_height, 1e-6)
+    span_t = wall["high"] - wall["low"]
+    span_h = room_height
+    n_t = int(np.clip(np.ceil(span_t / cell), 1, cfg.get("wall_max_cells_per_axis", 48)))
+    n_h = int(np.clip(np.ceil(span_h / cell), 1, 24))
+    if not inside.any() or n_t * n_h < 4:
+        return _quad(
+            [
+                normal * offset + tangent * wall["low"] + gravity * ceiling_level,
+                normal * offset + tangent * wall["high"] + gravity * ceiling_level,
+                normal * offset + tangent * wall["high"] + gravity * floor_level,
+                normal * offset + tangent * wall["low"] + gravity * floor_level,
+            ],
+            wall["color"],
+        ), 0
+
+    columns = np.clip(
+        ((t_values[inside] - wall["low"]) / span_t * n_t).astype(int), 0, n_t - 1
+    )
+    # Rows grow from the ceiling (min height) toward the floor (max height),
+    # matching gravity pointing down.
+    rows = np.clip(
+        ((h_values[inside] - ceiling_level) / span_h * n_h).astype(int), 0, n_h - 1
+    )
+    observed = np.zeros((n_h, n_t), dtype=bool)
+    observed[rows, columns] = True
+
+    behind_grid = np.zeros((n_h, n_t), dtype=bool)
+    if behind.any():
+        behind_columns = np.clip(
+            ((t_values[behind] - wall["low"]) / span_t * n_t).astype(int),
+            0,
+            n_t - 1,
+        )
+        behind_rows = np.clip(
+            ((h_values[behind] - ceiling_level) / span_h * n_h).astype(int),
+            0,
+            n_h - 1,
+        )
+        behind_grid[behind_rows, behind_columns] = True
+
+    opening = np.zeros((n_h, n_t), dtype=bool)
+
+    # Preserve-mask hint carving: project wall cell centers into every hint
+    # view whose camera sits on the wall's interior side, and carve cells
+    # that a majority of unoccluded views mark as fixed structure / opening.
+    if opening_hints:
+        col_centers = wall["low"] + span_t * (np.arange(n_t) + 0.5) / n_t
+        row_centers = ceiling_level + span_h * (np.arange(n_h) + 0.5) / n_h
+        mesh_t, mesh_h = np.meshgrid(col_centers, row_centers)
+        centers = (
+            normal[None] * offset
+            + tangent[None] * mesh_t.ravel()[:, None]
+            + gravity[None] * mesh_h.ravel()[:, None]
+        )
+        votes = np.zeros(n_h * n_t, dtype=np.int32)
+        observed_votes = np.zeros(n_h * n_t, dtype=np.int32)
+        min_vote_fraction = cfg.get("opening_min_vote_fraction", 0.5)
+        for hint in opening_hints:
+            extrinsic = np.asarray(hint["extrinsic"], dtype=np.float64)
+            cam_center = -extrinsic[:3, :3].T @ extrinsic[:3, 3]
+            if float(cam_center @ normal - offset) >= 0.0:
+                continue
+            p_cam = extrinsic[:3, :3] @ centers.T + extrinsic[:3, 3:4]
+            depth_z = p_cam[2]
+            front = depth_z > 1e-6
+            proj = hint["intrinsic"] @ p_cam
+            u_model = proj[0] / np.where(front, proj[2], 1.0)
+            v_model = proj[1] / np.where(front, proj[2], 1.0)
+            coords = hint["original_coords"]
+            width_orig = max(coords[2] - coords[0], 1e-6)
+            height_orig = max(coords[3] - coords[1], 1e-6)
+            ox = (u_model - coords[0]) / width_orig * coords[4]
+            oy = (v_model - coords[1]) / height_orig * coords[5]
+            in_bounds = (
+                front
+                & (ox >= 0)
+                & (ox < coords[4])
+                & (oy >= 0)
+                & (oy < coords[5])
+            )
+            if not in_bounds.any():
+                continue
+            # ox/oy index the ORIGINAL-resolution preserve mask; the depth
+            # map lives in model space, so it gets its own indices.
+            ox_idx = np.clip(ox.astype(int), 0, int(coords[4]) - 1)
+            oy_idx = np.clip(oy.astype(int), 0, int(coords[5]) - 1)
+            depth_map = hint["depth"]
+            mx_idx = np.clip(u_model.astype(int), 0, depth_map.shape[1] - 1)
+            my_idx = np.clip(v_model.astype(int), 0, depth_map.shape[0] - 1)
+            depth_at = depth_map[my_idx, mx_idx]
+            # The view observes the cell when nothing stands in front of it:
+            # the recorded depth matches the wall plane or lies beyond it
+            # (see-through), not clearly in front of the wall (occluder).
+            unoccluded = in_bounds & (
+                (depth_at <= 0) | (depth_at >= depth_z * 0.9)
+            )
+            observed_votes += unoccluded.astype(np.int32)
+            votes += (unoccluded & (hint["mask"][oy_idx, ox_idx] > 0)).astype(
+                np.int32
+            )
+        needed = np.maximum(1, np.ceil(min_vote_fraction * observed_votes).astype(int))
+        carved = (observed_votes > 0) & (votes >= needed)
+        if carved.any():
+            opening |= carved.reshape(n_h, n_t)
+
+    try:
+        from scipy import ndimage
+
+        # Opening candidates are unobserved cells backed by see-through
+        # evidence behind the wall; metric size filters then reject speckle
+        # and coverage gaps.
+        candidates = (~observed) & ndimage.binary_dilation(behind_grid, iterations=1)
+        labels, count = ndimage.label(candidates)
+        for label_id in range(1, count + 1):
+            component = labels == label_id
+            rows_idx, cols_idx = np.nonzero(component)
+            if cols_idx.min() == 0 or cols_idx.max() == n_t - 1:
+                # Touching a vertical wall edge is a coverage gap, not an
+                # opening; only the floor edge (doorways) is allowed.
+                continue
+            width = (cols_idx.max() - cols_idx.min() + 1) * cell
+            height = (rows_idx.max() - rows_idx.min() + 1) * cell
+            area = len(rows_idx) * cell**2
+            if (
+                width < cfg.get("opening_min_width_room_fraction", 0.3) * room_height
+                or height
+                < cfg.get("opening_min_height_room_fraction", 0.35) * room_height
+                or area < cfg.get("opening_min_area_room_fraction", 0.12) * room_height**2
+            ):
+                continue
+            opening |= component
+    except ImportError:
+        opening = np.zeros((n_h, n_t), dtype=bool)
+
+    openings = int(np.count_nonzero(opening))
+    if openings == 0:
+        return _quad(
+            [
+                normal * offset + tangent * wall["low"] + gravity * ceiling_level,
+                normal * offset + tangent * wall["high"] + gravity * ceiling_level,
+                normal * offset + tangent * wall["high"] + gravity * floor_level,
+                normal * offset + tangent * wall["low"] + gravity * floor_level,
+            ],
+            wall["color"],
+        ), 0
+
+    # Emit solid cells as horizontal strip quads (run-length merged per row).
+    solid_colors = {}
+    if inside.any():
+        support_colors = colors[inside]
+        support_keys = rows * n_t + columns
+        for key in np.unique(support_keys):
+            solid_colors[int(key)] = np.median(support_colors[support_keys == key], axis=0)
+    mesh = o3d.geometry.TriangleMesh()
+    for row in range(n_h):
+        column = 0
+        while column < n_t:
+            if opening[row, column]:
+                column += 1
+                continue
+            end = column
+            while end < n_t and not opening[row, end]:
+                end += 1
+            t_lo = wall["low"] + span_t * column / n_t
+            t_hi = wall["low"] + span_t * end / n_t
+            h_lo = ceiling_level + span_h * row / n_h
+            h_hi = ceiling_level + span_h * (row + 1) / n_h
+            color = np.median(colors, axis=0)
+            sampled = [solid_colors.get(row * n_t + c) for c in range(column, end)]
+            sampled = [s for s in sampled if s is not None]
+            if sampled:
+                color = np.median(np.stack(sampled), axis=0)
+            mesh += _quad(
+                [
+                    normal * offset + tangent * t_lo + gravity * h_hi,
+                    normal * offset + tangent * t_hi + gravity * h_hi,
+                    normal * offset + tangent * t_hi + gravity * h_lo,
+                    normal * offset + tangent * t_lo + gravity * h_lo,
+                ],
+                color,
+            )
+            column = end
+    mesh.remove_duplicated_vertices()
+    mesh.remove_degenerate_triangles()
+    mesh.compute_vertex_normals()
+    return mesh, openings
+
+
+def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=None):
     import open3d as o3d
 
     points = np.asarray(points, dtype=float)
@@ -100,13 +461,7 @@ def build_structural_mesh(points, colors, planes, gravity, cfg):
 
     heights = points @ gravity
     ceiling_level, floor_level = np.quantile(heights, [0.015, 0.985])
-    reference = np.array([1.0, 0.0, 0.0])
-    if abs(np.dot(reference, gravity)) > 0.85:
-        reference = np.array([0.0, 0.0, 1.0])
-    axis_u = np.cross(gravity, reference)
-    axis_u /= np.linalg.norm(axis_u) + 1e-12
-    axis_v = np.cross(gravity, axis_u)
-    axis_v /= np.linalg.norm(axis_v) + 1e-12
+    axis_u, axis_v = _plan_axes(gravity)
     u_values, v_values = points @ axis_u, points @ axis_v
     u_min, u_max = np.quantile(u_values, [0.01, 0.99])
     v_min, v_max = np.quantile(v_values, [0.01, 0.99])
@@ -133,10 +488,10 @@ def build_structural_mesh(points, colors, planes, gravity, cfg):
         ceiling_color,
     )
 
-    wall_count = 0
+    walls = []
     wall_source = "ransac"
     for plane in planes:
-        if plane["kind"] != "vertical" or wall_count >= cfg.get("max_walls", 8):
+        if plane["kind"] != "vertical" or len(walls) >= cfg.get("max_walls", 8):
             continue
         indices = plane["indices"]
         inliers = points[indices]
@@ -150,48 +505,81 @@ def build_structural_mesh(points, colors, planes, gravity, cfg):
         low, high = np.quantile(tangent_values, [0.01, 0.99])
         if high - low < cfg.get("min_wall_width", 0.3):
             continue
-        color = np.median(colors[indices], axis=0)
-        structural += _quad(
-            [
-                normal * offset + tangent * low + gravity * ceiling_level,
-                normal * offset + tangent * high + gravity * ceiling_level,
-                normal * offset + tangent * high + gravity * floor_level,
-                normal * offset + tangent * low + gravity * floor_level,
-            ],
-            color,
+        walls.append(
+            {
+                "normal": normal,
+                "offset": offset,
+                "low": float(low),
+                "high": float(high),
+                "color": np.median(colors[indices], axis=0),
+            }
         )
-        wall_count += 1
 
-    if wall_count == 0 and cfg.get("footprint_wall_fallback", True):
+    if not walls and cfg.get("plan_wall_detection", True):
+        detected = fit_wall_lines(points, gravity, floor_level, ceiling_level, cfg)
+        color_band = max(
+            float(cfg.get("voxel_size", 0.03)) * 2,
+            cfg.get("wall_band_room_fraction", 0.15) * (floor_level - ceiling_level),
+        )
+        for wall in detected:
+            nearby = np.abs(points @ wall["normal"] - wall["offset"]) <= color_band
+            color = np.median(colors[nearby], axis=0) if np.any(nearby) else np.median(colors, axis=0)
+            wall["color"] = color
+            walls.append(wall)
+        if walls:
+            wall_source = "plan_ransac"
+
+    if not walls and cfg.get("footprint_wall_fallback", True):
         wall_source = "robust_footprint_fallback"
         height_low = ceiling_level + 0.15 * (floor_level - ceiling_level)
         height_high = floor_level - 0.15 * (floor_level - ceiling_level)
         middle = (heights >= height_low) & (heights <= height_high)
+        middle_points = points[middle]
         fallback_walls = [
-            (axis_u, u_min, axis_v, v_min, v_max, u_values),
-            (axis_u, u_max, axis_v, v_max, v_min, u_values),
-            (axis_v, v_min, axis_u, u_max, u_min, v_values),
-            (axis_v, v_max, axis_u, u_min, u_max, v_values),
+            (axis_u, u_min, v_min, v_max, u_values),
+            (axis_u, u_max, v_min, v_max, u_values),
+            (axis_v, v_min, u_min, u_max, v_values),
+            (axis_v, v_max, u_min, u_max, v_values),
         ]
-        for normal, offset, tangent, low, high, coordinate_values in fallback_walls:
+        for normal, offset, low, high, coordinate_values in fallback_walls:
             band = max(
                 float(cfg.get("voxel_size", 0.03)) * 2,
                 0.05 * float(np.ptp(coordinate_values)),
             )
             nearby = middle & (np.abs(coordinate_values - offset) <= band)
             color = np.median(colors[nearby], axis=0) if np.any(nearby) else np.median(colors, axis=0)
-            structural += _quad(
-                [
-                    normal * offset + tangent * low + gravity * ceiling_level,
-                    normal * offset + tangent * high + gravity * ceiling_level,
-                    normal * offset + tangent * high + gravity * floor_level,
-                    normal * offset + tangent * low + gravity * floor_level,
-                ],
-                color,
+            # Orient the normal away from the room interior so "behind the
+            # wall" (used for opening evidence) is the positive side.
+            if len(middle_points) and np.median(middle_points @ normal - offset) > 0:
+                normal, offset, low, high = -normal, -offset, -high, -low
+            walls.append(
+                {
+                    "normal": normal,
+                    "offset": float(offset),
+                    "low": float(low),
+                    "high": float(high),
+                    "color": color,
+                }
             )
-            wall_count += 1
+
+    wall_count = 0
+    openings_total = 0
+    for wall in walls:
+        wall_mesh, openings = _emit_wall(
+            points, colors, gravity, axis_u, axis_v,
+            floor_level, ceiling_level, wall, cfg,
+            opening_hints=opening_hints,
+        )
+        structural += wall_mesh
+        wall_count += 1
+        openings_total += openings
 
     structural.remove_duplicated_vertices()
+    # Quads built from different wall/ceiling expressions can differ by one
+    # ulp; merge them so the structural mesh stays a clean closed box.
+    structural = structural.merge_close_vertices(
+        1e-6 * max(float(floor_level - ceiling_level), 1e-6)
+    )
     structural.remove_degenerate_triangles()
     structural.compute_vertex_normals()
     bounds = {
@@ -200,6 +588,7 @@ def build_structural_mesh(points, colors, planes, gravity, cfg):
         "room_height": float(floor_level - ceiling_level),
         "wall_count": wall_count,
         "wall_source": wall_source,
+        "wall_openings": openings_total,
         "footprint": [float(u_min), float(u_max), float(v_min), float(v_max)],
     }
     return structural, bounds
@@ -296,7 +685,7 @@ def build_poisson_mesh(points, colors, cfg):
     return mesh
 
 
-def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None):
+def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, opening_hints=None):
     import open3d as o3d
 
     output_dir = Path(output_dir)
@@ -318,7 +707,9 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None):
         min_points=cfg.get("min_plane_points", 1000),
         max_planes=cfg.get("max_planes", 12),
     )
-    structural, bounds = build_structural_mesh(points, colors, planes, gravity, cfg)
+    structural, bounds = build_structural_mesh(
+        points, colors, planes, gravity, cfg, opening_hints=opening_hints
+    )
     structural_path = output_dir / "structural_planes.ply"
     o3d.io.write_triangle_mesh(str(structural_path), structural)
 

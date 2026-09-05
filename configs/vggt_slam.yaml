@@ -1,0 +1,121 @@
+input_video: video/001.mp4
+output_dir: outputs/001_sam31_slam
+device: cuda:7
+sampling:
+  segmentation_stride: 30
+  output_fps: null
+camera:
+  fx: null
+  fy: null
+  cx: null
+  cy: null
+segmentation:
+  backend: sam31_sam2
+  environment: vbr-seg
+  cuda_visible_devices: '7'
+  sam3_checkpoint: checkpoints/sam3.1/sam3.1_multiplex.pt
+  sam2_checkpoint: checkpoints/sam2/sam2.1_hiera_large.pt
+  sam3_threshold: 0.40
+  sam3_max_objects: 64
+  sam2_offload_state: false
+  prompts:
+    - furniture
+    - television
+    - rug
+    - potted plant
+    - lamp
+    - decoration
+    - clothing
+    - bag
+    - sofa
+    - pillow
+    - cushion
+    - chair
+    - table
+    - vase
+    - coat rack
+    - shelving unit
+    - trash can
+    - kitchenware
+    - gray bean bag
+    - blanket
+    - bicycle
+    - book
+    - painting
+    - gray trash bin
+    - gray hamper
+    - gray fabric storage basket
+  prompt_thresholds:
+    gray bean bag: 0.35
+    blanket: 0.35
+    bicycle: 0.35
+    book: 0.35
+    painting: 0.35
+    gray trash bin: 0.35
+    gray hamper: 0.35
+    gray fabric storage basket: 0.30
+  preserve_prompts: [sink, kitchen cabinet, staircase, stairs, door, window, refrigerator]
+  mask_dilation_px: 7
+  min_area_px: 150
+slam:
+  backend: vggt_slam
+  environment: vbr-slam
+  repo_dir: external/VGGT-SLAM
+  cuda_visible_devices: '7'
+  checkpoint: checkpoints/vggt/model.pt
+  max_frames: 32
+  confidence_percentile: 35
+  pixel_stride: 1
+  voxel_size: 0.025
+  # vggt_slam backend options (used when backend: vggt_slam)
+  frame_stride: 4
+  max_keyframes: 240
+  submap_size: 16
+  overlap_size: 1
+  min_disparity: 35
+  conf_threshold: 25
+  lc_thres: 0.95
+  model_mode: square
+  max_loops: 1
+  salad_checkpoint: checkpoints/salad/dino_salad.ckpt
+  dinov2_checkpoint: checkpoints/dinov2/dinov2_vitb14_pretrain.pth
+geometry:
+  voxel_size: 0.03
+  plane_distance_threshold: 0.04
+  min_plane_points: 1000
+  max_planes: 12
+  max_walls: 8
+  min_wall_width: 0.3
+  footprint_wall_fallback: true
+  poisson_depth: 8
+  mesh_max_points: 150000
+  mesh_target_triangles: 250000
+  use_tsdf: true
+  tsdf_trunc: 0.15
+  depth_trunc_quantile: 0.995
+video_completion:
+  backend: propainter
+  environment: vbr-seg
+  cuda_visible_devices: '7'
+  repo_dir: external/ProPainter
+  ffmpeg_bin: /usr/bin/ffmpeg
+  width: 960
+  height: 536
+  fp16: true
+  mask_dilation: 5
+  ref_stride: 10
+  neighbor_length: 10
+  subvideo_length: 50
+  raft_iter: 20
+  crf: 18
+  preset: medium
+  allow_temporal_fallback: true
+  temporal_offsets: [15, -15, 30, -30, 60, -60]
+gpt:
+  enabled: false
+  provider: null
+  group_size: 8
+  endpoint: null
+  api_key_env: OPENAI_API_KEY
+sfm:
+  max_frames: 80

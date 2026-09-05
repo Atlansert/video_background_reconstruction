@@ -1,0 +1,10 @@
+numpy>=1.24
+opencv-python-headless>=4.8
+PyYAML>=6.0
+tqdm>=4.65
+scipy>=1.10
+trimesh>=4.0
+plotly>=5.0
+imageio>=2.30
+imageio-ffmpeg>=0.4
+open3d>=0.18

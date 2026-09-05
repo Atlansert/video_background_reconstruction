@@ -1,0 +1,5 @@
+# Keep the upstream PyTorch 2.3 stack on the NumPy 1.x ABI.
+numpy==1.26.4
+opencv-python==4.11.0.86
+opencv-python-headless==4.11.0.86
+setuptools<81

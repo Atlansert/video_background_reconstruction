@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Large data (managed outside git; see HANDOFF.md)
+checkpoints/
+outputs/
+video/
+external/
+source/
+offline_bundle/
+
+# Logs and temporaries
+*.log
+.nfs*

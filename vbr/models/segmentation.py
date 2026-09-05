@@ -98,21 +98,14 @@ class SegmentationAdapter:
                 "use 'sam31_sam2'"
             )
 
-        env_name = self.cfg.get("environment", "vbr-seg")
-        checkpoint = self.project_root / self.cfg.get(
-            "sam3_checkpoint", "checkpoints/sam3.1/sam3.1_multiplex.pt"
-        )
+        env_name, env, checkpoint = self._environment()
         sam2_checkpoint = self.project_root / self.cfg.get(
             "sam2_checkpoint", "checkpoints/sam2/sam2.1_hiera_large.pt"
         )
-        for path in (checkpoint, sam2_checkpoint):
-            if not path.exists():
-                raise FileNotFoundError(path)
+        if not sam2_checkpoint.exists():
+            raise FileNotFoundError(sam2_checkpoint)
 
         logs_dir.mkdir(parents=True, exist_ok=True)
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(self.cfg.get("cuda_visible_devices", "7"))
-        env["PYTHONUNBUFFERED"] = "1"
 
         detect_cmd = [
             "conda",

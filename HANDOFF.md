@@ -43,6 +43,16 @@
 - `--stop-after` 新增 `geometry` 选项，跳过耗时的视频修复阶段，便于重建/几何对比迭代。
 - 单元测试从 6 项增至 13 项（新增 SL(4) 尺度提取/射影归一化、mask 模型空间映射、adapter 命令构建等）。
 - 项目根目录已 `git init`（main 分支，见第 14 节）。
+
+### 2.2 2026-09-05 第二轮：mask 感知匹配、墙开口雕刻、prompt 扩充
+
+- **mask 感知 SLAM 匹配**（`--mask-aware-matching`，默认开）：前景像素的深度置信度置零后再进入 Solver，使子图尺度估计（`add_edge` 的 good_mask）、子图点过滤与 SALAD 回环检索嵌入都排除前景干扰。实测所有子图尺度估计发生变化、可检平面 5→6（与 direct 持平）。
+- **墙开口雕刻**（`geometry.carve_openings: true`）：新增 `masks_openings` 阶段——对重建帧（NPZ frame_ids）跑 preserve-only SAM3.1（door/window/staircase/stairs/kitchen cabinet/refrigerator/sink，带 manifest 缓存）；`_emit_wall` 把墙格网中心投影到各 hint 视图，深度关联（结构在墙面或墙前）后多数投票雕刻格网，另有“覆盖空洞+穿透证据”机制。001.mp4 上雕刻 9 格（楼梯/门区域），73 个 hint 帧。
+- **plan_wall_detection**（脚印平面 2D RANSAC 竖直墙检测，含支撑连续性约束）：已实现并有单测，但**默认关闭**——本视频是多房间/多层级场景，中高层带混入非墙结构，需要先做房间分割才有意义（见 TODO）。
+- **prompt 扩充**：探针验证后新增 `cup`、`bottle`、`table lamp`、`doormat`（此前漏检的桌上水杯、落地灯、地垫）；重跑分割后覆盖率 0.3393→0.3398，人工核对 `mask_overlay` 确认命中且无误伤。`tools/probe` 式验证思路：先用少量帧测 prompt 命中，再全量重跑。
+- **工具**：`tools/rebuild_geometry.py`（只重跑几何阶段，秒级迭代墙/雕刻参数）。
+- 代码梳理修复的 bug 清单：`_emit_wall` 内 floor/ceiling 比较反向、room_height 符号（两处）、fallback 墙切向坐标域错误（两面墙 quad 落在房间外）、hint 投影 mask(原始分辨率)/depth(模型空间) 坐标系混用、可见性条件反向、多数票基准错用 in_bounds 而非深度关联视角数、`sam31_keyframes` 空 prompt 校验顺序、`_emit_wall` 早退分支跳过 hint 雕刻。
+- 测试 17 项全通过（新增 hint 投影雕刻含双坐标系映射与深度可见性用例）。
 - SAM2.1 分段时序传播到全部视频帧。
 - 封闭 mask 孔洞填充。
 - 使用 mask 在 VGGT 深度反投影前过滤前景点。
@@ -297,7 +307,10 @@ video_background_reconstruction/
 10. cache fingerprint 已包含分割相关源码 hash；但重建/几何阶段没有缓存，改配置重跑会重复计算（当前可接受）。
 11. 最近一次状态中的 `filled_enclosed_hole_pixels: 0` 表示最后一次运行时 mask 已经没有新孔洞，不代表算法没有实现孔洞填充。
 12. `interactive.html` 是点云/网格浏览器，不是带完整语义层级、碰撞和导航的引擎场景。
-13. `vggt_slam` 的 TSDF 表面（4455 顶点）小于 `vggt_direct`（5780），原因是子图残余失配与更保守的置信度过滤；可通过调大 `max_keyframes`/降低 `min_disparity` 或降低 `confidence_percentile` 改善。
+13. `vggt_slam` 的 TSDF 表面（4406 顶点）小于 `vggt_direct`（5780），原因是子图残余失配与更保守的置信度过滤；可通过调大 `max_keyframes`/降低 `min_disparity` 或降低 `confidence_percentile` 改善。
+14. VGGT-SLAM 的 SL(4) 节点是射影矩阵，任何从 `graph.get_homography()` 提取位姿/尺度的新代码都必须先做 `H / H[3,3]` 归一化（`vbr/vggt_slam_backend.py` 的 `rigid_from_similarity` 已处理，勿删）。
+15. `plan_wall_detection` 在多房间/多层场景会把楼梯平台等误当墙（中高层带不纯净）；启用前需先实现房间分割。footprint fallback 仍是生产默认。
+16. `outputs/001_sam31` 基线保留旧版 mask（与其输出一致）；`outputs/001_sam31_slam` 使用扩充 prompt 后的新 mask。两边 mask 版本不同，跨目录对比时注意（见 comparison_report.json 的 mask_version 字段）。
 14. VGGT-SLAM 的 SL(4) 节点是射影矩阵，任何从 `graph.get_homography()` 提取位姿/尺度的新代码都必须先做 `H / H[3,3]` 归一化（`vbr/vggt_slam_backend.py` 的 `rigid_from_similarity` 已处理，勿删）。
 
 ## 9. 已经尝试过但失败或效果不理想的方法
@@ -335,13 +348,14 @@ Poisson 对稀疏、遮挡严重、法线不稳定的室内点云容易出现封
 - [x] 输出优化后每帧 extrinsics、frame ids、submap/loop closure 报告（`trajectory_tum.txt` + `points_background.json`）。
 - [x] 对比 direct VGGT 与完整 VGGT-SLAM 的轨迹和网格质量（`outputs/001_sam31_slam/comparison_report.json`）。
 - [x] 增加完整运行的回归测试或小视频 smoke test（`tools/smoke_test_slam.sh` + 13 项单元测试）。
-- [ ] 把 foreground mask 传入 VGGT/子图匹配过程，降低前景对姿态估计的干扰。
+- [x] 把 foreground mask 传入 VGGT/子图匹配过程（mask 感知匹配：尺度估计/点过滤/回环检索排除前景）。
+- [x] 墙面加入门窗、楼梯、固定柜体的开口/遮挡建模（preserve mask 投影投票 + 穿透证据；001.mp4 雕刻 9 格）。
 
 ### 质量提升
 
 - [ ] 调整 SAM3.1 prompt，减少宽泛的 `furniture` / `decoration` 误删。
 - [ ] 对 mask 做边界评估、时序一致性评估和固定物体保护评估。
-- [ ] 墙面加入门窗、楼梯、固定柜体的开口/遮挡建模。
+- [x] 墙面加入门窗、楼梯、固定柜体的开口/遮挡建模（见 2.2 节）。
 - [ ] 将多视角 3D mask 融合和重投影作为可选增强阶段。
 - [ ] 接入 GPT/VLM provider，并限制其输出为稳定的短名词 prompt。
 - [ ] 增加真实尺度输入接口，例如已知门高、房间尺寸或相机高度。
@@ -367,7 +381,7 @@ cd /data/lzx/video_background_reconstruction
 pytest -q
 ```
 
-当前测试共 13 项，覆盖：
+当前测试共 17 项，覆盖：
 
 - 相机重力方向；四墙 fallback；
 - mask 映射到 VGGT 模型空间（square/crop 两种模式）；

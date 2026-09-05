@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import cv2
@@ -265,27 +266,18 @@ def _emit_wall(
     span_h = room_height
     n_t = int(np.clip(np.ceil(span_t / cell), 1, cfg.get("wall_max_cells_per_axis", 48)))
     n_h = int(np.clip(np.ceil(span_h / cell), 1, 24))
-    if not inside.any() or n_t * n_h < 4:
-        return _quad(
-            [
-                normal * offset + tangent * wall["low"] + gravity * ceiling_level,
-                normal * offset + tangent * wall["high"] + gravity * ceiling_level,
-                normal * offset + tangent * wall["high"] + gravity * floor_level,
-                normal * offset + tangent * wall["low"] + gravity * floor_level,
-            ],
-            wall["color"],
-        ), 0
 
-    columns = np.clip(
-        ((t_values[inside] - wall["low"]) / span_t * n_t).astype(int), 0, n_t - 1
-    )
-    # Rows grow from the ceiling (min height) toward the floor (max height),
-    # matching gravity pointing down.
-    rows = np.clip(
-        ((h_values[inside] - ceiling_level) / span_h * n_h).astype(int), 0, n_h - 1
-    )
     observed = np.zeros((n_h, n_t), dtype=bool)
-    observed[rows, columns] = True
+    if inside.any():
+        columns = np.clip(
+            ((t_values[inside] - wall["low"]) / span_t * n_t).astype(int), 0, n_t - 1
+        )
+        # Rows grow from the ceiling (min height) toward the floor (max height),
+        # matching gravity pointing down.
+        rows = np.clip(
+            ((h_values[inside] - ceiling_level) / span_h * n_h).astype(int), 0, n_h - 1
+        )
+        observed[rows, columns] = True
 
     behind_grid = np.zeros((n_h, n_t), dtype=bool)
     if behind.any():
@@ -317,6 +309,7 @@ def _emit_wall(
         )
         votes = np.zeros(n_h * n_t, dtype=np.int32)
         observed_votes = np.zeros(n_h * n_t, dtype=np.int32)
+        associated_votes = np.zeros(n_h * n_t, dtype=np.int32)
         min_vote_fraction = cfg.get("opening_min_vote_fraction", 0.5)
         for hint in opening_hints:
             extrinsic = np.asarray(hint["extrinsic"], dtype=np.float64)
@@ -351,18 +344,29 @@ def _emit_wall(
             mx_idx = np.clip(u_model.astype(int), 0, depth_map.shape[1] - 1)
             my_idx = np.clip(v_model.astype(int), 0, depth_map.shape[0] - 1)
             depth_at = depth_map[my_idx, mx_idx]
-            # The view observes the cell when nothing stands in front of it:
-            # the recorded depth matches the wall plane or lies beyond it
-            # (see-through), not clearly in front of the wall (occluder).
-            unoccluded = in_bounds & (
-                (depth_at <= 0) | (depth_at >= depth_z * 0.9)
+            # A mask pixel describes this wall cell when its surface sits at
+            # the wall plane (flush door/window) or in front of it (stairs,
+            # cabinets, fridge occluding the wall). A pixel whose depth is
+            # far beyond the wall belongs to a different surface and must
+            # not carve this cell.
+            associated = (
+                in_bounds & (depth_at > 0) & (depth_at <= depth_z * 1.15)
             )
-            observed_votes += unoccluded.astype(np.int32)
-            votes += (unoccluded & (hint["mask"][oy_idx, ox_idx] > 0)).astype(
+            associated_votes += associated.astype(np.int32)
+            votes += (associated & (hint["mask"][oy_idx, ox_idx] > 0)).astype(
                 np.int32
             )
-        needed = np.maximum(1, np.ceil(min_vote_fraction * observed_votes).astype(int))
-        carved = (observed_votes > 0) & (votes >= needed)
+        # The majority is taken over the views whose depth associates the
+        # projected pixel with this wall, not over all in-bounds views.
+        needed = np.maximum(1, np.ceil(min_vote_fraction * associated_votes).astype(int))
+        carved = (associated_votes > 0) & (votes >= needed)
+        if os.environ.get("VBR_DEBUG_WALL_VOTES"):
+            print(
+                f"[wall votes] grid=({n_h}x{n_t}) cells_with_assoc="
+                f"{int((associated_votes > 0).sum())} cells_with_votes="
+                f"{int((votes > 0).sum())} max_assoc={int(associated_votes.max())} "
+                f"max_votes={int(votes.max())} carved={int(carved.sum())}"
+            )
         if carved.any():
             opening |= carved.reshape(n_h, n_t)
 
@@ -535,11 +539,14 @@ def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=No
         height_high = floor_level - 0.15 * (floor_level - ceiling_level)
         middle = (heights >= height_low) & (heights <= height_high)
         middle_points = points[middle]
+        # Extents are expressed in each wall's tangent coordinate
+        # t = cross(gravity, normal); for the axis_v walls that coordinate is
+        # -u, so the range is (-u_max, -u_min), not (u_min, u_max).
         fallback_walls = [
             (axis_u, u_min, v_min, v_max, u_values),
             (axis_u, u_max, v_min, v_max, u_values),
-            (axis_v, v_min, u_min, u_max, v_values),
-            (axis_v, v_max, u_min, u_max, v_values),
+            (axis_v, v_min, -u_max, -u_min, v_values),
+            (axis_v, v_max, -u_max, -u_min, v_values),
         ]
         for normal, offset, low, high, coordinate_values in fallback_walls:
             band = max(

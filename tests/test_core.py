@@ -208,9 +208,14 @@ class WallDetectionTests(unittest.TestCase):
         carved_mesh, carved_cells = build(3.0)
         self.assertGreater(carved_cells, 0)
 
-        # Depth shows an occluder in front of the wall: nothing is carved.
-        blocked_mesh, blocked_cells = build(1.0)
-        self.assertEqual(blocked_cells, 0)
+        # An occluder in front of the wall also carves the cells behind it
+        # (cabinet/fridge occlusion modelling).
+        occluded_mesh, occluded_cells = build(1.0)
+        self.assertGreater(occluded_cells, 0)
+
+        # Depth far beyond the wall: the mask describes another surface.
+        beyond_mesh, beyond_cells = build(30.0)
+        self.assertEqual(beyond_cells, 0)
 
     def test_fallback_walls_survive_new_pipeline(self):
         x, z = np.meshgrid(np.linspace(-1, 1, 12), np.linspace(-2, 2, 12))

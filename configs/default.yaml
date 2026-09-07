@@ -18,6 +18,20 @@ segmentation:
   sam3_threshold: 0.40
   sam3_max_objects: 64
   sam2_offload_state: false
+  sam2_dual_anchor: true
+  temporal_stabilize: true
+  temporal_xor_threshold: 0.06
+  temporal_blend_window: 8
+  onset_refinement:
+    enabled: true
+    min_new_area_px: 3500
+    persistence_frames: 3
+    dilation_px: 9
+    cooldown_frames: 15
+    lookback_frames: 12
+    forward_frames: 6
+    overlap_fraction: 0.5
+    max_events: 20
   prompts:
     - furniture
     - television
@@ -41,6 +55,9 @@ segmentation:
     - shelving unit
     - trash can
     - kitchenware
+    - dresser
+    - chest of drawers
+    - boxes
     - gray bean bag
     - blanket
     - bicycle
@@ -110,10 +127,18 @@ video_completion:
   width: 960
   height: 536
   fp16: true
-  mask_dilation: 5
-  ref_stride: 10
-  neighbor_length: 10
-  subvideo_length: 50
+  # Keep inpaint masks close to the segmentation boundary. ProPainter applies
+  # mask_dilation itself; long temporal unions or hull fills over-mask rooms.
+  mask_dilation: 8
+  mask_close_px: 9
+  mask_temporal_radius: 2
+  mask_expand_px: 1
+  mask_hull_min_area: 0
+  mask_hull_max_extra: 0.35
+  mask_overlap: 0.12
+  ref_stride: 5
+  neighbor_length: 20
+  subvideo_length: 80
   raft_iter: 20
   crf: 18
   preset: medium

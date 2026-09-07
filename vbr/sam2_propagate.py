@@ -37,6 +37,49 @@ def _mask_from_logits(logits, height, width):
     return union
 
 
+def load_key_masks(
+    key_masks_dir: Path, frame_index_by_id: dict[int, int]
+) -> list[tuple[int, int, np.ndarray]]:
+    """Load non-empty SAM 3.1 seeds as (video_index, frame_id, mask)."""
+    key_masks = []
+    for path in _numeric_paths(key_masks_dir, "png"):
+        frame_id = int(path.stem)
+        if frame_id not in frame_index_by_id:
+            continue
+        mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if mask is not None and np.any(mask):
+            key_masks.append((frame_index_by_id[frame_id], frame_id, mask))
+    return key_masks
+
+
+def keyframe_intervals(
+    key_masks: list[tuple[int, int, np.ndarray]], last_index: int
+) -> list[tuple[int, np.ndarray, int, np.ndarray | None]]:
+    """Pair consecutive seeds into [start, end] intervals.
+
+    The last video frame is cloned from the last seed when it has no mask of
+    its own, so every frame belongs to an interval. Each tuple is
+    ``(start_index, start_mask, end_index, end_mask_or_none)``.
+    """
+    if not key_masks:
+        return []
+    seeds = list(key_masks)
+    if seeds[0][0] != 0:
+        raise RuntimeError("The first video frame must have a non-empty keyframe mask")
+    if seeds[-1][0] != last_index:
+        seeds.append((last_index, None, seeds[-1][2]))
+    intervals = []
+    for index, (start, _, start_mask) in enumerate(seeds):
+        if index + 1 < len(seeds):
+            end, _, end_mask = seeds[index + 1]
+        else:
+            end, end_mask = start, None
+        if end <= start:
+            continue
+        intervals.append((start, start_mask, end, end_mask))
+    return intervals
+
+
 def run(args: argparse.Namespace) -> None:
     import torch
     from sam2.build_sam import build_sam2_video_predictor
@@ -50,18 +93,12 @@ def run(args: argparse.Namespace) -> None:
     if not frame_paths:
         raise RuntimeError(f"No numeric JPEG frames found in {frames_dir}")
     frame_index_by_id = {int(path.stem): index for index, path in enumerate(frame_paths)}
-    key_masks = []
-    for path in _numeric_paths(key_masks_dir, "png"):
-        frame_id = int(path.stem)
-        if frame_id not in frame_index_by_id:
-            continue
-        mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if mask is not None and np.any(mask):
-            key_masks.append((frame_index_by_id[frame_id], frame_id, mask))
+    key_masks = load_key_masks(key_masks_dir, frame_index_by_id)
     if not key_masks:
         raise RuntimeError("SAM2 propagation has no non-empty SAM 3.1 seed masks")
-    if key_masks[0][0] != 0:
-        raise RuntimeError("The first video frame must have a non-empty keyframe mask")
+    intervals = keyframe_intervals(key_masks, len(frame_paths) - 1)
+    if not intervals:
+        raise RuntimeError("SAM2 propagation produced no keyframe intervals")
 
     started = time.time()
     predictor = build_sam2_video_predictor(
@@ -73,17 +110,9 @@ def run(args: argparse.Namespace) -> None:
     first_image = cv2.imread(str(frame_paths[0]))
     height, width = first_image.shape[:2]
     coverage = np.zeros(len(frame_paths), dtype=float)
+    dual_anchor_intervals = 0
 
-    if key_masks[-1][0] != len(frame_paths) - 1:
-        key_masks.append((len(frame_paths) - 1, int(frame_paths[-1].stem), key_masks[-1][2]))
-
-    for interval_index, (start, _, seed_mask) in enumerate(key_masks):
-        if interval_index + 1 < len(key_masks):
-            end = key_masks[interval_index + 1][0]
-        else:
-            end = start
-        if end < start:
-            continue
+    for interval_index, (start, seed_mask, end, end_mask) in enumerate(intervals):
         with tempfile.TemporaryDirectory(prefix="vbr_sam2_chunk_") as temporary:
             chunk_dir = Path(temporary)
             for local_index, source in enumerate(frame_paths[start : end + 1]):
@@ -97,10 +126,22 @@ def run(args: argparse.Namespace) -> None:
             predictor.add_new_mask(
                 state, frame_idx=0, obj_id=1, mask=seed_mask.astype(bool)
             )
+            use_end_anchor = (
+                args.dual_anchor
+                and end_mask is not None
+                and end > start
+                and np.any(end_mask)
+            )
+            if use_end_anchor:
+                predictor.add_new_mask(
+                    state,
+                    frame_idx=end - start,
+                    obj_id=1,
+                    mask=end_mask.astype(bool),
+                )
+                dual_anchor_intervals += 1
             for local_index, _, logits in predictor.propagate_in_video(state):
                 global_index = start + local_index
-                if global_index == end and interval_index + 1 < len(key_masks) - 1:
-                    continue
                 mask = _clean_mask(
                     _mask_from_logits(logits, height, width), args.min_area
                 )
@@ -109,24 +150,37 @@ def run(args: argparse.Namespace) -> None:
                     mask,
                 )
                 coverage[global_index] = float(np.count_nonzero(mask)) / mask.size
-            exact = _clean_mask(seed_mask, args.min_area)
+            exact_start = _clean_mask(seed_mask, args.min_area)
             cv2.imwrite(
-                str(out_dir / f"{int(frame_paths[start].stem):06d}.png"), exact
+                str(out_dir / f"{int(frame_paths[start].stem):06d}.png"), exact_start
             )
-            coverage[start] = float(np.count_nonzero(exact)) / exact.size
+            coverage[start] = float(np.count_nonzero(exact_start)) / exact_start.size
+            if use_end_anchor:
+                exact_end = _clean_mask(end_mask, args.min_area)
+                cv2.imwrite(
+                    str(out_dir / f"{int(frame_paths[end].stem):06d}.png"), exact_end
+                )
+                coverage[end] = float(np.count_nonzero(exact_end)) / exact_end.size
             del state
         if interval_index % 10 == 0:
             torch.cuda.empty_cache()
         print(
-            f"SAM2 interval {interval_index + 1}/{len(key_masks)}: "
+            f"SAM2 interval {interval_index + 1}/{len(intervals)}: "
             f"frames {start}-{end}"
+            f"{' dual-anchor' if use_end_anchor else ''}"
         )
 
     report = {
         "backend": "sam2.1_hiera_large",
-        "mode": "independent_keyframe_intervals",
+        "mode": (
+            "dual_anchor_keyframe_intervals"
+            if args.dual_anchor
+            else "independent_keyframe_intervals"
+        ),
         "frames": len(frame_paths),
         "seed_frames": len(key_masks),
+        "intervals": len(intervals),
+        "dual_anchor_intervals": dual_anchor_intervals,
         "mean_coverage": float(np.mean(coverage)),
         "max_coverage": float(np.max(coverage)),
         "nonempty_frames": int(np.count_nonzero(coverage > 0)),
@@ -148,6 +202,19 @@ def main() -> None:
     parser.add_argument("--model-config", default="configs/sam2.1/sam2.1_hiera_l.yaml")
     parser.add_argument("--min-area", type=int, default=100)
     parser.add_argument("--offload-state", action="store_true")
+    parser.add_argument(
+        "--dual-anchor",
+        dest="dual_anchor",
+        action="store_true",
+        default=True,
+        help="Condition each interval on both endpoint SAM 3.1 seeds (default).",
+    )
+    parser.add_argument(
+        "--no-dual-anchor",
+        dest="dual_anchor",
+        action="store_false",
+        help="Forward-only propagation from the interval start seed.",
+    )
     run(parser.parse_args())
 
 

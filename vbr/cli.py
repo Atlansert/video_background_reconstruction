@@ -6,11 +6,13 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from .config import load_config
@@ -21,9 +23,13 @@ from .models.slam import SLAMAdapter
 from .models.inpainting import ProPainterAdapter, _resolve_ffmpeg
 from .prompts import resolve_prompts
 from .video import (
+    detect_mask_onsets,
     extract_frame_sets,
     fill_enclosed_mask_holes,
     mask_statistics,
+    onset_latency_metrics,
+    prepare_inpainting_masks,
+    stabilize_foreground_masks,
     video_info,
     write_background_video,
     write_mask_overlay,
@@ -41,6 +47,7 @@ _SEGMENTATION_SOURCE_MODULES = (
     "sam2_propagate.py",
     "prompts.py",
     "models/segmentation.py",
+    "video.py",
 )
 
 
@@ -153,6 +160,108 @@ def _load_opening_hints(output_dir: Path, cfg, all_frames: Path, slam_result: di
     return _build_opening_hints(values, masks_out / "preserved")
 
 
+def _refine_onset_seeds(
+    segmentation_cfg, all_frames, key_masks, masks, output_dir, logs_dir, frame_count
+):
+    """Add dense SAM 3.1 seeds just before persistent foreground onsets."""
+    onset_cfg = segmentation_cfg.get("onset_refinement", {})
+    if not onset_cfg.get("enabled", True):
+        return [], {"enabled": False, "events": []}
+    events = detect_mask_onsets(
+        masks,
+        min_new_area_px=int(onset_cfg.get("min_new_area_px", 3500)),
+        persistence_frames=int(onset_cfg.get("persistence_frames", 3)),
+        dilation_px=int(onset_cfg.get("dilation_px", 9)),
+        cooldown_frames=int(onset_cfg.get("cooldown_frames", 15)),
+    )
+    max_events = int(onset_cfg.get("max_events", 8))
+    events = sorted(events, key=lambda event: -event["new_area_px"])[:max_events]
+    events.sort(key=lambda event: event["frame_id"])
+    if not events:
+        return [], {"enabled": True, "events": [], "refined_seed_frames": []}
+
+    lookback = int(onset_cfg.get("lookback_frames", 12))
+    forward = int(onset_cfg.get("forward_frames", 6))
+    frame_ids = sorted(
+        {
+            frame_id
+            for event in events
+            for frame_id in range(
+                max(0, event["frame_id"] - lookback),
+                min(frame_count, event["frame_id"] + forward + 1),
+            )
+        }
+    )
+    refinement_dir = output_dir / "masks_onset_refinement"
+    augmented_dir = output_dir / "masks_keyframes_sam31_onset"
+    shutil.rmtree(refinement_dir, ignore_errors=True)
+    shutil.rmtree(augmented_dir, ignore_errors=True)
+    shutil.copytree(key_masks, augmented_dir)
+    adapter = SegmentationAdapter(segmentation_cfg, PROJECT_ROOT)
+    adapter.run_refinement_masks(frame_ids, all_frames, refinement_dir, logs_dir)
+
+    refined_seed_frames = []
+    for path in refinement_dir.glob("*.png"):
+        mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if mask is None or not np.any(mask):
+            continue
+        shutil.copy2(path, augmented_dir / path.name)
+        refined_seed_frames.append(int(path.stem))
+    if not refined_seed_frames:
+        return [], {
+            "enabled": True,
+            "events": events,
+            "candidate_frames": frame_ids,
+            "refined_seed_frames": [],
+            "warning": "SAM 3.1 refinement returned no non-empty masks",
+        }
+
+    baseline_dir = output_dir / "masks_onset_baseline"
+    shutil.rmtree(baseline_dir, ignore_errors=True)
+    shutil.copytree(masks, baseline_dir)
+    shutil.rmtree(masks, ignore_errors=True)
+    masks.mkdir(parents=True, exist_ok=True)
+    sam2_report = adapter.propagate(
+        all_frames, augmented_dir, masks, logs_dir, log_name="sam2_onset_refinement.log"
+    )
+    latency = onset_latency_metrics(
+        baseline_dir,
+        masks,
+        events,
+        dilation_px=int(onset_cfg.get("dilation_px", 9)),
+        overlap_fraction=float(onset_cfg.get("overlap_fraction", 0.5)),
+        window_back=int(onset_cfg.get("lookback_frames", 12)),
+        window_forward=int(onset_cfg.get("forward_frames", 6)),
+    )
+    improved_event_ids = {
+        record["frame_id"]
+        for record in latency["events"]
+        if record["latency_frames"] > 0
+    }
+    improved_seed_frames = sorted(
+        {
+            seed
+            for event in events
+            if event["frame_id"] in improved_event_ids
+            for seed in refined_seed_frames
+            if event["frame_id"] - lookback <= seed <= event["frame_id"] + forward
+        }
+    )
+    report = {
+        "enabled": True,
+        "events": events,
+        "candidate_frames": frame_ids,
+        "refined_seed_frames": refined_seed_frames,
+        "improved_seed_frames": improved_seed_frames,
+        "sam2": sam2_report,
+        "latency": latency,
+    }
+    (output_dir / "onset_events.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
+    return improved_seed_frames, report
+
+
 def _ensure_frames(video_path, info, all_frames, keyframes, stride):
     expected_keyframes = len(set(range(0, info["frames"], stride)) | {info["frames"] - 1})
     all_count = len(list(all_frames.glob("*.jpg")))
@@ -164,7 +273,7 @@ def _ensure_frames(video_path, info, all_frames, keyframes, stride):
     return extract_frame_sets(video_path, all_frames, keyframes, stride)
 
 
-def run(cfg, stop_after="all", force=False):
+def run(cfg, stop_after="all", force=False, refine_onsets=False):
     started = time.time()
     input_video = (PROJECT_ROOT / cfg["input_video"]).resolve()
     output_dir = (PROJECT_ROOT / cfg["output_dir"]).resolve()
@@ -201,9 +310,10 @@ def run(cfg, stop_after="all", force=False):
             keyframes.glob("*.jpg"),
         )
         segmentation_fingerprint = _fingerprint(input_video, segmentation_cfg)
-        if force or not _cached(
+        segmentation_ran = force or not _cached(
             segmentation_manifest, segmentation_fingerprint, info["frames"], masks
-        ):
+        )
+        if segmentation_ran:
             _clear_generated(key_masks)
             _clear_generated(masks)
             segmentation_report = SegmentationAdapter(
@@ -245,9 +355,40 @@ def run(cfg, stop_after="all", force=False):
                 encoding="utf-8",
             )
 
+        onset_seed_ids = []
+        onset_report = {"enabled": False, "events": [], "refined_seed_frames": []}
+        if segmentation_ran or refine_onsets:
+            onset_seed_ids, onset_report = _refine_onset_seeds(
+                segmentation_cfg,
+                all_frames,
+                key_masks,
+                masks,
+                output_dir,
+                output_dir / "logs",
+                info["frames"],
+            )
+        segmentation_seed_ids = sorted(set(keyframe_ids) | set(onset_seed_ids))
         filled_hole_pixels = fill_enclosed_mask_holes(masks)
-        mask_report = mask_statistics(masks, info["frames"])
+        stabilize_report = {"changed_frames": 0, "changed_pixels": 0, "pinned_frames": 0}
+        if segmentation_cfg.get("temporal_stabilize", True):
+            stabilize_report = stabilize_foreground_masks(
+                masks,
+                pin_stems=segmentation_seed_ids,
+                xor_threshold=float(
+                    segmentation_cfg.get("temporal_xor_threshold", 0.06)
+                ),
+                window=int(segmentation_cfg.get("temporal_blend_window", 8)),
+            )
+            filled_hole_pixels += fill_enclosed_mask_holes(masks)
+        mask_report = mask_statistics(
+            masks,
+            info["frames"],
+            keyframe_stride=key_stride,
+            keyframe_ids=segmentation_seed_ids,
+        )
         mask_report["filled_enclosed_hole_pixels"] = filled_hole_pixels
+        mask_report["temporal_stabilize"] = stabilize_report
+        mask_report["onset_refinement"] = onset_report
         if mask_report["files"] != info["frames"] or mask_report["mean_coverage"] <= 0:
             raise RuntimeError(f"Invalid foreground masks: {mask_report}")
         status["stages"]["segmentation"] = {
@@ -315,13 +456,29 @@ def run(cfg, stop_after="all", force=False):
             return
 
         completion_cfg = cfg.get("video_completion", {})
+        inpaint_masks = output_dir / "masks_inpaint"
+        inpaint_report = prepare_inpainting_masks(
+            masks,
+            inpaint_masks,
+            close_px=int(completion_cfg.get("mask_close_px", 9)),
+            temporal_radius=int(completion_cfg.get("mask_temporal_radius", 2)),
+            dilate_px=int(completion_cfg.get("mask_expand_px", 1)),
+            hull_min_area=int(completion_cfg.get("mask_hull_min_area", 0)),
+            hull_max_extra=float(completion_cfg.get("mask_hull_max_extra", 0.35)),
+            overlap=float(completion_cfg.get("mask_overlap", 0.12)),
+        )
+        status["stages"]["inpainting_masks"] = {
+            "state": "complete",
+            **inpaint_report,
+        }
+        status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
         try:
             if completion_cfg.get("backend", "propainter") != "propainter":
                 raise RuntimeError("ProPainter disabled by configuration")
             video_report = ProPainterAdapter(completion_cfg, PROJECT_ROOT).run(
                 input_video,
                 all_frames,
-                masks,
+                inpaint_masks,
                 output_dir / "background_video.mp4",
                 info["fps"],
             )
@@ -331,7 +488,7 @@ def run(cfg, stop_after="all", force=False):
             video_report = write_background_video(
                 input_video,
                 all_frames,
-                masks,
+                inpaint_masks,
                 output_dir / "background_video.mp4",
                 dilation=cfg["segmentation"].get("mask_dilation_px", 7),
                 temporal_offsets=completion_cfg.get(
@@ -427,11 +584,21 @@ def main():
         default="all",
     )
     run_parser.add_argument("--force", action="store_true")
+    run_parser.add_argument(
+        "--refine-onsets",
+        action="store_true",
+        help="Re-run first-appearance refinement on existing segmentation masks",
+    )
     doctor_parser = subparsers.add_parser("doctor")
     doctor_parser.add_argument("--config", default="configs/default.yaml")
     args = parser.parse_args()
     if args.command == "run":
-        run(load_config(args.config), stop_after=args.stop_after, force=args.force)
+        run(
+            load_config(args.config),
+            stop_after=args.stop_after,
+            force=args.force,
+            refine_onsets=args.refine_onsets,
+        )
     elif args.command == "doctor":
         doctor(load_config(args.config))
     else:

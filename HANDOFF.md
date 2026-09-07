@@ -1,6 +1,6 @@
 # Video Background Reconstruction 项目交接文档
 
-更新日期：2026-09-05（第二次更新：完整 VGGT-SLAM 已接入并跑通，见第 2.1 节）
+更新日期：2026-09-07（第六次更新：首现精修已接入，见第 2.7 节）
 
 项目根目录：`/data/lzx/video_background_reconstruction`
 
@@ -61,6 +61,74 @@
 - 新旧背景视频同帧差分（帧 100/500/1200/1500）：落地灯、地垫、茶几杯瓶在 SLAM 版全部被移除（帧 1500 差异 0.3% 集中于杯瓶区域），其余区域差异 0.005-0.008%（无误伤）——**探针验证的 4 个新 prompt（cup/bottle/table lamp/doormat）的收益在最终视频中闭环确认**。
 - 新工具：`tools/video_contact_sheet.py`（视频抽帧接触表，可叠加 overlay 视频逐帧对照）。
 - ⚠️ 交接文档事故记录：`HANDOFF.md` 曾被会话报告内容覆盖、会话报告文件被删（疑似接管方误操作，已由 git 历史 `a045fcb`/`c46c92b` 恢复并补齐 2.3 节）。两份文档职责：**HANDOFF.md = 项目完整交接文档；SESSION_HANDOFF_2026-09-06.md = 代理会话进度报告**，请勿相互覆盖。
+
+### 2.4 2026-09-06：mask 跳帧突变（关键帧边界硬切）
+
+观测：独立区间 SAM2 在 stride=30 关键帧处硬切。`outputs/001_sam31_slam` 上关键帧边界 XOR 均值 0.065，区间内部 0.019，比值 3.51×；最大单帧 XOR 0.299（帧 1020）。1 帧闪烁约 0.0008。
+
+修复（已接入默认配置，复用已有 SAM3.1 关键帧，未重跑检测）：
+
+1. **双锚点传播**（`vbr/sam2_propagate.py`）：每个区间同时把两端 SAM3.1 种子登记为 conditioning frame，正向传播时 memory 同时看见下一关键帧；关键帧仍用精确种子覆盖。
+2. **1 帧闪烁抑制**（`stabilize_mask_sequence`）：像素在 t±1 同为前景/背景而 t 相反时翻转；SAM3.1 关键帧钉住。
+3. **大跳变距离变换过渡**（`blend_mask_jumps`）：XOR≥0.06 的跳变用 signed-distance 在最多 8 帧窗口内插值；关键帧钉住，不改 SAM3.1 语义。
+
+`001_sam31_slam` 指标（`mask_temporal_before.json` / `mask_temporal_after.json`）：
+
+| 指标 | 独立区间 | 双锚点+稳定 |
+| --- | --- | --- |
+| 平均覆盖率 | 0.340 | 0.338 |
+| 平均帧间 XOR | 0.0202 | 0.0170 |
+| 最大帧间 XOR | 0.299 | 0.088 |
+| 关键帧边界 XOR | 0.0654 | 0.0269 |
+| 边界/内部 XOR 比 | 3.51 | 1.61 |
+| 1 帧闪烁（关/开） | 0.00080 / 0.00070 | 0.00017 / 0.00016 |
+
+旧独立区间 mask 备份在 `outputs/001_sam31_slam/masks_independent_backup/`；旧背景视频备份在 `background_video_independent_masks.mp4`。`outputs/001_sam31/` 回归基线未改。测试 22 项。配置项：`sam2_dual_anchor`、`temporal_stabilize`、`temporal_xor_threshold`、`temporal_blend_window`。
+
+用新 mask 重跑 ProPainter 后：残留均值 48.96→46.64，闪烁比 1.087→1.115。mask 层 1 帧闪烁降了约 5 倍。随后发现视频里物体仍会闪，根因是邻帧未遮住的物体被光流拷回，见 2.5。
+
+### 2.5 2026-09-06：背景视频伪影与前景闪烁
+
+根因：ProPainter 把未遮住像素当已知背景，从邻帧拷回原物体。重建 mask 在 750–930 覆盖率掉到 0.06–0.18（沙发漏检约 6 秒），拷贝率最高 0.93（帧 960）。
+
+修复（只扩 inpaint mask，不改 SLAM 用的紧 mask）：
+
+1. `prepare_inpainting_masks`：形态学闭运算 + 大连通域保守凸包 + 8 帧无门控并集（去闪）+ 24 帧重叠门控并集（跨秒漏检，避免不同视角家具叠成整帧）。
+2. ProPainter：`mask_dilation` 8，`neighbor_length` 20，`subvideo_length` 80，`ref_stride` 5。
+
+`001_sam31_slam` 当前视频：
+
+| 指标 | 双锚点紧 mask | 门控 inpaint mask |
+| --- | --- | --- |
+| 拷贝率均值（mask 内 absdiff&lt;12） | 0.190 | 0.080 |
+| 拷贝率&gt;0.2 的抽帧 | 101/360 | 36/360 |
+| 闪烁比 | 1.13 | 0.82 |
+| 残留均值 | 46.6 | 55.4 |
+
+残留升高是预期：原物体更少被原样留下。仍偏高的 780–900 是 SAM 长时间漏检沙发。产物：`background_video.mp4`，overlay `mask_overlay_inpaint.mp4`。旧视频备份 `background_video_dual_anchor.mp4`。
+
+### 2.6 2026-09-07：inpaint mask 精确优先
+
+用户观测正确：2.5 的长时并集 / 凸包策略过度覆盖了前景外的背景。紧 reconstruction mask 平均覆盖率 0.338，而门控 inpaint mask 为 0.533，凸包单独新增约 1,732 万像素。
+
+当前默认策略：`close_px=9`、`temporal_radius=2`、`expand_px=1`，禁用凸包和长时并集；ProPainter 仍保留内部 `mask_dilation=8`。新增指标 `mean_extra_coverage`、`p90_coverage`、`max_coverage`、`extra_coverage_ratio`。
+
+精确 inpaint mask：均值覆盖率 0.371（额外 0.034），P90 0.556，最高 0.605；旧门控版均值 0.533。视频评估：闪烁比 0.967（仍低于 1），拷贝率 0.158（旧门控版 0.080）。按用户优先级，当前 `background_video.mp4` 采用**精确版**，而不再以大面积背景误遮罩来降低残影；旧门控视频保留为 `background_video_gated_inpaint.mp4`，旧门控 mask 为 `masks_inpaint_gated_backup/`。测试 25 项。
+
+### 2.7 2026-09-07：物体初次出现时 mask 不及时 → 首现精修（onset refinement）
+
+问题：SAM3.1 只在每 30 帧关键帧上做语义分割，物体在区间中途入画时，精确种子最多晚约 1 秒；`masks_inpaint` 的短时并集只补几帧，弥补不了整段延迟，而长时并集又会重新过度覆盖背景。
+
+方案（默认开启，`segmentation.onset_refinement`）：
+
+1. `detect_mask_onsets`：在基础 SAM2 mask 上检测“持续存在的新前景连通域”（`min_new_area_px=3500`、持续 3 帧、9px 膨胀关联、15 帧冷却、最多 20 个事件），单帧闪烁不会触发。
+2. `run_refinement_masks`：对每个事件只取 `[onset-12, onset+6]` 的局部稠密窗口重跑 SAM3.1 全部 remove/preserve prompts。
+3. 将得到 376 个精确 seed 并入关键帧 seed（共 423 个 pin），用 SAM2 双锚点重传播全部 1799 帧（422 个区间）。
+4. `onset_latency_metrics`：对比基线，**平均提前 8.65 帧，20 个事件中 18 个提前**；结果写入 `onset_events.json`。
+5. inpaint mask 仍保持 2.6 的精确策略，没有被扩大。
+
+视频评估（当前 vs 首现前精确版）：拷贝率 0.149 vs 0.175，拷贝>0.2 帧 64 vs 87，时序比 0.984 vs 1.031，残留 49.9，闪烁比 0.933。inpaint 覆盖率 0.383（源 0.343），未突破精确上限。重建/SLAM 已用新 mask 同步重跑。产物：`background_video.mp4`（当前）、`mask_overlay.mp4`、`mask_overlay_inpaint.mp4`；回退快照 `background_video_preonset.mp4`、`masks_preonset_backup/`。CLI 增加 `--refine-onsets`，可在已有分割结果上单独重跑首现精修；测试 27 项。
+
 - SAM2.1 分段时序传播到全部视频帧。
 - 封闭 mask 孔洞填充。
 - 使用 mask 在 VGGT 深度反投影前过滤前景点。
@@ -74,7 +142,7 @@
 - ProPainter 视频背景修复。
 - ProPainter 失败时的时间帧单应性 + Telea 回退方案。
 - `doctor` 环境检查。
-- 6 个核心单元测试。
+- 22 个核心单元测试。
 - GPT/VLM 动态 prompt provider 接口预留。
 
 最近一次运行结果位于 `outputs/001_sam31/`，状态文件显示：
@@ -134,7 +202,8 @@ slam:
 - 完善墙面、门窗、楼梯开口的结构建模。
 - 增加多视角 3D mask 融合后再重投影的流程。
 - 将 VLM 自动 prompt 发现接入实际 provider。
-- 对 ProPainter 输出做前景残留和闪烁评估（已有量化工具 `tools/evaluate_inpainting.py`，基线：残留均值 48.9、闪烁比 1.086；下一步是据此调参）。
+- mask 跳帧突变已压低；inpaint mask 已收紧为精确优先（见 2.4–2.6）；首现延迟已通过局部稠密 SAM3.1 种子平均提前 8.65 帧（见 2.7）。下一步是 780–900 的沙发漏检，优先改 prompt/阈值。
+- 对 ProPainter 输出做前景残留和闪烁评估（`tools/evaluate_inpainting.py`；当前首现精修版：残留 49.9，闪烁比 0.93，拷贝率 0.149）。
 - 增加缓存版本号或代码 hash（已完成：mask 缓存指纹含分割源码 hash）。
 - 处理 VGGT 相对尺度（已部分完成：子图间尺度已折算统一；跨运行的真实米制标定接口仍缺）。
 

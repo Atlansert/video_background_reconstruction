@@ -136,8 +136,9 @@ video_completion:
   mask_hull_min_area: 0
   mask_hull_max_extra: 0.35
   mask_overlap: 0.12
-  ref_stride: 5
-  neighbor_length: 20
+  # Refinement: clip search ranked n=80 best but OOM on 1799-frame video; 40 is close.
+  ref_stride: 10
+  neighbor_length: 40
   subvideo_length: 80
   raft_iter: 20
   crf: 18

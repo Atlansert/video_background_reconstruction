@@ -89,12 +89,29 @@ def score_variant(
         mask = masks[local] if masks[local] is not None else None
         if mask is None or not np.any(mask):
             continue
+        rebuilt_frame = rebuilt[local]
+        if rebuilt_frame.shape[:2] != originals[local].shape[:2]:
+            rebuilt_frame = cv2.resize(
+                rebuilt_frame,
+                (originals[local].shape[1], originals[local].shape[0]),
+            )
         inner = cv2.erode((mask > 0).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
         if not inner.any():
             continue
-        diff = cv2.absdiff(originals[local], rebuilt[local]).astype(np.float32).mean(axis=2)
+        diff = cv2.absdiff(originals[local], rebuilt_frame).astype(np.float32).mean(axis=2)
         copy_fraction = float((diff[inner] < 11).mean())
-        temporal = cv2.absdiff(rebuilt[local - 1], rebuilt[local]).astype(np.float32).mean(axis=2)
+        temporal_frame = rebuilt[local]
+        temporal_prev = rebuilt[local - 1]
+        target_shape = originals[local].shape[:2]
+        if temporal_frame.shape[:2] != target_shape:
+            temporal_frame = cv2.resize(
+                temporal_frame, (target_shape[1], target_shape[0])
+            )
+        if temporal_prev.shape[:2] != target_shape:
+            temporal_prev = cv2.resize(
+                temporal_prev, (target_shape[1], target_shape[0])
+            )
+        temporal = cv2.absdiff(temporal_prev, temporal_frame).astype(np.float32).mean(axis=2)
         dilated = cv2.dilate(mask, np.ones((7, 7), np.uint8)) > 0
         inside = float(temporal[dilated].mean())
         outside = float(temporal[~dilated].mean()) if (~dilated).sum() > 100 else 1.0

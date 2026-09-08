@@ -30,6 +30,7 @@ from vbr.video import (
     stabilize_mask_sequence,
 )
 from vbr.prompts import resolve_prompts
+from tools.post_temporal_smooth import smooth_video
 from tools.refine_inpainting import expand_copy_through, find_copy_through
 
 
@@ -92,6 +93,37 @@ class InpaintRefineTests(unittest.TestCase):
             writer.release()
             copies = find_copy_through(video, bg_video, masks_dir, threshold=20.0, min_area=50)
             self.assertEqual(copies, {})
+
+
+def test_temporal_smooth_kills_one_frame_flash_and_keeps_length():
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            masks_dir = root / "masks"
+            masks_dir.mkdir()
+            base = np.zeros((40, 40, 3), dtype=np.uint8)
+            base[:] = (100, 120, 140)
+            flash = base.copy()
+            flash[10:30, 10:30] = (10, 10, 10)
+            frames = [base, flash, base, base, base]
+            video = root / "input.mp4"
+            writer = cv2.VideoWriter(
+                str(video), cv2.VideoWriter_fourcc(*"mp4v"), 5, (40, 40)
+            )
+            for frame in frames:
+                writer.write(frame)
+            writer.release()
+            for index in range(5):
+                cv2.imwrite(
+                    str(masks_dir / f"{index:06d}.png"),
+                    np.full((40, 40), 255, np.uint8),
+                )
+            smoothed = root / "out.mp4"
+            report = smooth_video(video, masks_dir, smoothed, kernel=3)
+            assert report["frames_written"] == 5
+            assert report["changed_pixels"] > 0
+            capture = cv2.VideoCapture(str(smoothed))
+            assert int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) == 5
+            capture.release()
 
 
 class GeometryTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 # Video Background Reconstruction 项目交接文档
 
-更新日期：2026-09-07（第六次更新：首现精修已接入，见第 2.7 节）
+更新日期：2026-09-08（第七次更新：前景扣除的五个优化方向已依次落地，见第 2.8 节）
 
 项目根目录：`/data/lzx/video_background_reconstruction`
 
@@ -128,6 +128,18 @@
 5. inpaint mask 仍保持 2.6 的精确策略，没有被扩大。
 
 视频评估（当前 vs 首现前精确版）：拷贝率 0.149 vs 0.175，拷贝>0.2 帧 64 vs 87，时序比 0.984 vs 1.031，残留 49.9，闪烁比 0.933。inpaint 覆盖率 0.383（源 0.343），未突破精确上限。重建/SLAM 已用新 mask 同步重跑。产物：`background_video.mp4`（当前）、`mask_overlay.mp4`、`mask_overlay_inpaint.mp4`；回退快照 `background_video_preonset.mp4`、`masks_preonset_backup/`。CLI 增加 `--refine-onsets`，可在已有分割结果上单独重跑首现精修；测试 27 项。
+
+### 2.8 2026-09-08：前景扣除不干净 → 五个优化方向依次落地
+
+对“视频伪影闪烁”按五个方向依次实施并量化（全部保留可回退快照）：
+
+1. **prompt 审计**（方向 2）：在漏检关键帧 840–1020 上探测 130+ 候选 prompt。新增 `dresser`、`chest of drawers`、`boxes`（在 990/1020 检出约 4.6 万/2.5 万新像素）；`cupboard/cabinet` 命中主要来自固定厨房柜体，与 preserve 冲突，未加入。
+2. **选择性 pinning**（方向 4）：只 pin 带来首现提前的种子（342 个，另 26 个无效种子放开），减少 mask 边界抖动。重跑后首现平均提前 **9.4 帧**（18/20 事件）。
+3. **两遍残差反哺**（方向 1，工具 `tools/refine_inpainting.py`）：找出输出与原图几乎相同的掩膜内连通域，并入 inpaint mask 重跑 ProPainter。两轮共补 26 万像素，拷贝率小幅下降；透传源主要在其它未遮帧，所以收益有限。
+4. **ProPainter 参数搜索**（方向 3，工具 `tools/search_propainter_params.py`）：在 760–990 片段上网格搜索，`neighbor_length=80` 最优但全片 OOM（138GB），采用次优的 `neighbor_length=40, ref_stride=10`（拷贝 0.524→0.497）。
+5. **时序中值平滑**（方向 5，工具 `tools/post_temporal_smooth.py`）：对掩膜内部做 3 帧中值滤波，再 h264+aac 封装。时序比 0.992→0.945。
+
+最终视频指标（`video_evaluation.json` `vggt_slam_final_20260908`）：残留均值 50.4、闪烁比 0.949、拷贝率 0.136（路线起点 0.149）、mask 内时序比 0.945。inpaint mask 覆盖率保持 0.384+两遍反哺补丁，未回退到长时全局并集。测试 31 项。新工具：`tools/refine_inpainting.py`、`tools/search_propainter_params.py`、`tools/post_temporal_smooth.py`。回退：`background_video_n40_unsmoothed.mp4`（平滑前）、`masks_inpaint_pass1_backup/`（反哺前）。`outputs/001_sam31/` 回归基线始终未动。
 
 - SAM2.1 分段时序传播到全部视频帧。
 - 封闭 mask 孔洞填充。

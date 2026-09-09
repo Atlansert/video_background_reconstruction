@@ -163,6 +163,21 @@
 
 **剩余可做**：① 用户提供沙发归一化 box 后重跑 `tools/refine_misses.py`（≈50 分钟）；② 子图尺度归一化（修复 0.23–1.0 尺度漂移造成的地面叠影）；③ vggt_slam 重估深度的 `--reuse-slam` 缓存选项（当前每次全重跑）。
 
+### 2.10 2026-09-09：纯背景模式（冰箱/橱柜等厨房家具进前景）
+
+用户要求前景包含冰箱、橱柜等固定家具，只保留纯建筑背景（墙、窗、门、楼梯）。
+
+修改（两套配置同步）：
+1. remove prompts 新增 `refrigerator`、`kitchen cabinet`、`cabinet`、`cupboard`、`sink`、`kitchen counter`、`countertop`（共 40 项）。
+2. `preserve_prompts` 收窄为 `[staircase, stairs, door, window]`；`geometry.opening_prompts` 同步去掉厨房三项。
+3. 全链 `--force` 重跑（12:34–14:12）：mask 均值 0.3485→**0.3902**（最大覆盖仍 0.5795，无膨胀；增长集中在 917–949 厨房视角）。
+
+效果（`video_evaluation.json` `vggt_slam_kitchen_20260909`）：拷贝率整体 0.175→**0.126**，闪烁比 0.955→**0.926**，残留 53.5（去除更多前景所致，属预期上升）；**此前的 866–989"沙发窗"因厨房物品入前景而消失**（该窗可能本就是厨房橱柜），现剩窗口 764–815 拷贝 0.311、0–82 0.167。GLB 用新纯背景视频重估深度重建：点云 22,089→29,120，TSDF 表面 4,670→6,997 顶点，`plan_ransac` 8 面真墙，开口 10，补洞 86。
+
+**过程中发现并修复一个自造 bug**：`_ensure_frames` 的 `video_source.json` marker 起初写在 `frames_all/` 内，ProPainter 的目录读取器无差别 `imread` 每个文件导致 `cvtColor` 崩溃（cv2 空图断言）。修复：marker 移到 output_dir 根（`vbr/cli.py`），并新增回归测试断言 frames 目录只允许图像文件；`_clear_generated` 后由驱动单独重跑视频阶段恢复产物。测试 51 项。
+
+回退快照：`background_video_prekitchen.mp4`、`masks_prekitchen_backup/`、`masks_inpaint_prekitchen/`、`background_scene_prekitchen.glb`。
+
 - SAM2.1 分段时序传播到全部视频帧。
 - 封闭 mask 孔洞填充。
 - 使用 mask 在 VGGT 深度反投影前过滤前景点。

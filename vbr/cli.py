@@ -415,7 +415,7 @@ def _ensure_frames(video_path, info, all_frames, keyframes, stride):
     marker file records the source stat + shape and forces re-extraction on
     any mismatch.
     """
-    marker_path = all_frames / "video_source.json"
+    marker_path = all_frames.parent / "video_source.json"
     marker = {
         "path": str(Path(video_path).resolve()),
         "size": Path(video_path).stat().st_size,

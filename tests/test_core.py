@@ -1121,6 +1121,30 @@ class InpaintingTests(unittest.TestCase):
             reextracted = cv2_module.imread(str(all_frames / "000000.jpg"))
             self.assertGreater(int(reextracted[0, 0, 0]), 128)
 
+    def test_frame_dirs_contain_only_images(self):
+        import cv2 as cv2_module
+
+        from vbr.cli import _ensure_frames
+        from vbr.video import video_info
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video = root / "video.mp4"
+            writer = cv2_module.VideoWriter(
+                str(video), cv2_module.VideoWriter_fourcc(*"mp4v"), 5, (40, 40)
+            )
+            for _ in range(5):
+                writer.write(np.full((40, 40, 3), 60, dtype=np.uint8))
+            writer.release()
+            info = video_info(video)
+            all_frames = root / "frames_all"
+            keyframes = root / "frames_keyframes"
+            _ensure_frames(video, info, all_frames, keyframes, 2)
+            # ProPainter's reader imreads every file in the frames dir, so
+            # anything that is not a JPEG (JSON markers, reports) crashes it.
+            leftovers = [p.name for p in all_frames.iterdir() if p.suffix != ".jpg"]
+            self.assertEqual(leftovers, [])
+
 
 if __name__ == "__main__":
     unittest.main()

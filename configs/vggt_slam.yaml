@@ -81,6 +81,13 @@ segmentation:
     - shelving unit
     - trash can
     - kitchenware
+    - refrigerator
+    - kitchen cabinet
+    - cabinet
+    - cupboard
+    - sink
+    - kitchen counter
+    - countertop
     - dresser
     - chest of drawers
     - boxes
@@ -101,7 +108,7 @@ segmentation:
     gray trash bin: 0.35
     gray hamper: 0.35
     gray fabric storage basket: 0.30
-  preserve_prompts: [sink, kitchen cabinet, staircase, stairs, door, window, refrigerator]
+  preserve_prompts: [staircase, stairs, door, window]
   mask_dilation_px: 7
   min_area_px: 150
 slam:
@@ -129,7 +136,7 @@ slam:
   dinov2_checkpoint: checkpoints/dinov2/dinov2_vitb14_pretrain.pth
 geometry:
   carve_openings: true
-  opening_prompts: [door, window, staircase, stairs, kitchen cabinet, refrigerator, sink]
+  opening_prompts: [door, window, staircase, stairs]
   voxel_size: 0.03
   plane_distance_threshold: 0.04
   min_plane_points: 1000

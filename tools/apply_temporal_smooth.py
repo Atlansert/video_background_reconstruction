@@ -21,7 +21,6 @@ from pathlib import Path
 
 from vbr.cli import PROJECT_ROOT, _resolve_ffmpeg, update_pipeline_status
 from vbr.config import load_config
-from vbr.models.inpainting import ProPainterAdapter
 from vbr.video import video_info
 
 

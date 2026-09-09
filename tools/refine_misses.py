@@ -15,12 +15,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 from vbr.cli import PROJECT_ROOT, _refine_miss_windows, update_pipeline_status
 from vbr.config import load_config
 from vbr.models.inpainting import ProPainterAdapter
-from vbr.models.segmentation import SegmentationAdapter
 from vbr.video import (
     extract_frame_sets,
     fill_enclosed_mask_holes,

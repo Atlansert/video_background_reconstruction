@@ -89,8 +89,17 @@ class SegmentationAdapter:
         all_frames_dir: Path,
         output_dir: Path,
         logs_dir: Path,
+        extra_prompts: list | None = None,
+        extra_prompt_thresholds: dict | None = None,
+        box_prompts: list | None = None,
     ) -> Path:
-        """Segment a small dense frame subset to add first-appearance seeds."""
+        """Segment a small dense frame subset to add first-appearance seeds.
+
+        ``extra_prompts`` / ``extra_prompt_thresholds`` are merged into the
+        configured list/table for this run only (used by miss-window probing).
+        ``box_prompts`` are normalized {start, end, box, prompt?} entries for
+        objects that text prompts persistently miss (sofa family).
+        """
         env_name, env, checkpoint = self._environment()
         output_dir = output_dir.resolve()
         subset_dir = output_dir / "frames_subset"
@@ -102,16 +111,23 @@ class SegmentationAdapter:
             destination = subset_dir / source.name
             if not destination.exists():
                 shutil.copy(source, destination)
+        prompts = list(self.cfg.get("prompts", []))
+        if extra_prompts:
+            prompts = prompts + [prompt for prompt in extra_prompts if prompt not in prompts]
+        thresholds = dict(self.cfg.get("prompt_thresholds", {}))
+        thresholds.update(extra_prompt_thresholds or {})
         command = [
             "conda", "run", "--no-capture-output", "-n", env_name, "python",
             "-m", "vbr.sam31_keyframes", "--frames", str(subset_dir.resolve()),
             "--output", str(output_dir), "--checkpoint", str(checkpoint),
-            "--prompts-json", json.dumps(self.cfg.get("prompts", [])),
+            "--prompts-json", json.dumps(prompts),
             "--preserve-prompts-json", json.dumps(self.cfg.get("preserve_prompts", [])),
-            "--prompt-thresholds-json", json.dumps(self.cfg.get("prompt_thresholds", {})),
+            "--prompt-thresholds-json", json.dumps(thresholds),
             "--threshold", str(self.cfg.get("sam3_threshold", 0.45)),
             "--max-objects", str(self.cfg.get("sam3_max_objects", 64)),
         ]
+        if box_prompts:
+            command += ["--box-prompts-json", json.dumps(box_prompts)]
         self._run_logged(command, logs_dir / "sam31_onset_refinement.log", env)
         return output_dir
 

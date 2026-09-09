@@ -141,6 +141,28 @@
 
 最终视频指标（`video_evaluation.json` `vggt_slam_final_20260908`）：残留均值 50.4、闪烁比 0.949、拷贝率 0.136（路线起点 0.149）、mask 内时序比 0.945。inpaint mask 覆盖率保持 0.384+两遍反哺补丁，未回退到长时全局并集。测试 31 项。新工具：`tools/refine_inpainting.py`、`tools/search_propainter_params.py`、`tools/post_temporal_smooth.py`。回退：`background_video_n40_unsmoothed.mp4`（平滑前）、`masks_inpaint_pass1_backup/`（反哺前）。`outputs/001_sam31/` 回归基线始终未动。
 
+### 2.9 2026-09-09：视频伪影残余 + GLB 破碎/空洞 → 漏检窗口精修、光流平滑、背景视频重估深度
+
+用户复评发现：背景视频仍有伪影（沙发段残留最重），GLB 破碎且穿洞。方案分两线，全部落地并量化：
+
+**视频线**
+
+1. **持续漏检窗口重探测**（`detect_persistent_misses` + `_refine_miss_windows`，配置 `segmentation.miss_refinement`）：按逐帧覆盖率检测"≥30 帧持续低于 0.20"的窗口（命中 0–82、745–840、858–989），窗口内稠密重跑 SAM3.1。① 文本 prompt 增补（sofa bed/loveseat/futon/armchair/…）对**沙发失效**（该沙发对 SAM3.1 文本探测结构性免疫）；② **box 种子兜底**：`sam31_keyframes` 新增 `--box-prompts-json`（归一化 xywh，SAM3.1 原生支持 bounding_boxes），box 由现有 mask 团块按 25 帧子窗口自动推导并外扩 40%；③ **证据感知接受**（`select_miss_seeds` + `copy_through_evidence`）：覆盖率增幅上限 0.15 对"新增像素 ≥50% 落在拷贝残留区"的候选豁免——只扩在视频中确实可见的透传区，守住精准原则。命中帧（820/940）新增覆盖与拷贝残留重叠 89%/64%；最终 mask：全片均值 0.3485（上限未破），沙发窗 745–840 0.175、858–989 0.160。
+2. **光流对齐时序平滑**（`vbr/temporal_smooth.py`，配置 `video_completion.temporal_smooth`）：RAFT（ProPainter 权重，vbr-seg 环境）把 t±1 warp 到 t 后再做 3 帧中值，取代无对齐中值（相机运动下的糊化/重影）。1799 帧全片，已接入 `ProPainterAdapter.run` 流水线；`tools/apply_temporal_smooth.py` 可对既有视频单独应用。
+3. **两遍残差反哺 ×3 轮**（`tools/refine_inpainting.py --max-rounds 3`）：每轮 ~13 万像素入 mask。
+4. **V3 分块 n=80 决定**：机制已实现（`chunk_ranges`/`_stitch_chunks`，单测通过），但主导残余是 mask 缺失而非参数（clip 上 n=80 仅 0.497→0.449），跳过全片运行，工具保留。
+5. 最终视频（`background_video.mp4`，V1.c+V2+两遍×3）：残留 50.86、闪烁比 0.955、copy 全片 0.175、窗口 745–792 0.409（基线 0.466 的窗口内显著改善）、**866–989 仍 0.577 —— 本线唯一未根治项**，需人工归一化 box（`miss_refinement.box_seeds`，如 `[{"start":866,"end":989,"box":[0.2,0.3,0.95,0.9],"prompt":"sofa"}]`）才能由 SAM3.1 box 种子补完。
+
+**几何线（GLB）**
+
+6. **背景视频重估深度**（`tools/rebuild_geometry_from_background.py`）：从最终背景视频抽 1799 帧 + 全零 mask 重跑 vggt_slam（`vbr.vggt_slam_backend` 增加"空 mask 跳过护栏"判断）→ 前景区获得深度观测。点云 17,829→22,089，原始深度留存 21.4M→27.6M。
+7. **真墙替代假墙**：plan 视图墙线检测（`fit_wall_lines`）在重估后生效——`wall_source` 从 `robust_footprint_fallback`（4 面 AABB 假墙、9 个乱刻开口）变为 **`plan_ransac`（8 面真墙、开口 9→3）**；`plan_wall_detection: true` 默认开启。假墙兜底偏移改为近邻点中位数。
+8. **网格后处理**（`clean_mesh`：连通域过滤 81→3 组件、主件占 90%、耳切补洞 23 处）；修复 open3d `mesh +=` 与 numpy 视图别名的**指数级复制 bug**（16 次叠加后 6.17 亿顶点 → 全部改为一次性构建）。新 GLB：surface 4670 顶点、合并 4746 顶点/7970 三角、`background_scene.glb` 2026-09-09 版；旧版存 `background_scene_pre_redepth.glb`。子图尺度异常（0.23–1.0）已记录到报告（待后续归一化处理，未在本轮修复）。
+
+指标与产物：`video_evaluation.json` `vggt_slam_final_20260909`、`comparison_report.json` `video_iterations`/`glb_redepth_20260909`、`geometry_redepth_report.json`、`miss_windows.json`（含 evidence 统计）、`pipeline_status.json` `final_20260909`。回退快照：`background_video_unsmoothed.mp4`、`background_video_premiss.mp4`、`masks_premiss_backup/`、`background_mesh_pre_redepth.ply`、`background_scene_pre_redepth.glb`。测试 48 项（新增：漏检窗口检测、box 种子推导、证据豁免、耳切、补洞、chunk 拼接、光流 warp/中值）。`outputs/001_sam31/` 回归基线始终未动。
+
+**剩余可做**：① 用户提供沙发归一化 box 后重跑 `tools/refine_misses.py`（≈50 分钟）；② 子图尺度归一化（修复 0.23–1.0 尺度漂移造成的地面叠影）；③ vggt_slam 重估深度的 `--reuse-slam` 缓存选项（当前每次全重跑）。
+
 - SAM2.1 分段时序传播到全部视频帧。
 - 封闭 mask 孔洞填充。
 - 使用 mask 在 VGGT 深度反投影前过滤前景点。

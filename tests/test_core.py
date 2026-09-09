@@ -133,6 +133,79 @@ class GeometryTests(unittest.TestCase):
             estimate_gravity(extrinsic), np.array([0.0, 1.0, 0.0]), atol=1e-8
         )
 
+    def test_ear_clip_triangulates_l_shaped_polygon(self):
+        import open3d as o3d
+
+        from vbr.geometry import _ear_clip
+
+        uv = np.asarray(
+            [[0.0, 0.0], [3.0, 0.0], [3.0, 2.0], [2.0, 2.0], [2.0, 1.0], [0.0, 1.0]]
+        )
+        triangles = _ear_clip(uv)
+        self.assertEqual(len(triangles), 4)
+        area = 0.5 * abs(
+            sum(
+                uv[a][0] * uv[b][1] - uv[b][0] * uv[a][1]
+                for a, b in ((0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0))
+            )
+        )
+        triangle_area = sum(
+            0.5
+            * abs(
+                uv[a][0] * (uv[b][1] - uv[c][1])
+                + uv[b][0] * (uv[c][1] - uv[a][1])
+                + uv[c][0] * (uv[a][1] - uv[b][1])
+            )
+            for a, b, c in triangles
+        )
+        self.assertAlmostEqual(area, triangle_area, places=5)
+
+    def test_small_boundary_loop_is_filled_and_large_kept(self):
+        import open3d as o3d
+
+        from vbr.geometry import fill_small_boundary_holes, _boundary_loops
+
+        # A quad of two triangles, one removed: a triangular 3-edge hole.
+        vertices = o3d.utility.Vector3dVector(
+            np.asarray(
+                [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 2.0, 0.0], [0.0, 2.0, 0.0]]
+            )
+        )
+        complete = o3d.geometry.TriangleMesh(
+            vertices, o3d.utility.Vector3iVector(np.asarray([[0, 1, 2], [0, 2, 3]]))
+        )
+        punctured = o3d.geometry.TriangleMesh(
+            vertices, o3d.utility.Vector3iVector(np.asarray([[0, 1, 2]]))
+        )
+        loops = _boundary_loops(punctured)
+        self.assertEqual(len(loops), 1)
+        self.assertEqual(len(loops[0]), 3)
+        filled, count = fill_small_boundary_holes(punctured, max_loop_edges=10)
+        self.assertEqual(count, 1)
+        self.assertEqual(len(np.asarray(filled.triangles)), 2)
+        self.assertEqual(len(_boundary_loops(filled)), 0)
+        # A loop longer than the limit stays open.
+        big = o3d.geometry.TriangleMesh(
+            vertices, o3d.utility.Vector3iVector(np.asarray([[0, 1, 2], [0, 2, 3]]))
+        )
+        filled2, count2 = fill_small_boundary_holes(big, max_loop_edges=0)
+        self.assertEqual(count2, 0)
+
+    def test_clean_mesh_drops_floating_fragment(self):
+        import open3d as o3d
+
+        from vbr.geometry import clean_mesh
+
+        box = o3d.geometry.TriangleMesh.create_box(2.0, 2.0, 2.0)
+        fragment = o3d.geometry.TriangleMesh.create_tetrahedron().translate(
+            [5.0, 5.0, 5.0]
+        )
+        combined = box + fragment
+        cleaned, stats = clean_mesh(combined, {"mesh_min_component_triangles": 10})
+        self.assertEqual(stats["components_before"], 2)
+        self.assertEqual(stats["components_after"], 1)
+        self.assertAlmostEqual(stats["largest_fraction"], 12 / 16, places=5)
+
     def test_footprint_fallback_builds_four_walls(self):
         x, z = np.meshgrid(np.linspace(-1, 1, 12), np.linspace(-2, 2, 12))
         floor = np.column_stack([x.ravel(), np.ones(x.size), z.ravel()])
@@ -389,6 +462,252 @@ class MaskTests(unittest.TestCase):
         last_is_key = keyframe_intervals(key_masks, last_index=30)
         self.assertEqual(len(last_is_key), 1)
         self.assertEqual(last_is_key[0][2], 30)
+
+    def test_sustained_low_coverage_window_is_detected(self):
+        from vbr.video import detect_persistent_misses
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            full = np.full((40, 40), 255, dtype=np.uint8)
+            empty = np.zeros((40, 40), dtype=np.uint8)
+            for index in range(100):
+                if 30 <= index <= 60:
+                    cv2.imwrite(str(directory / f"{index:06d}.png"), empty)
+                else:
+                    cv2.imwrite(str(directory / f"{index:06d}.png"), full)
+            windows = detect_persistent_misses(
+                directory, 100, min_coverage=0.5, min_window_frames=20
+            )
+            self.assertEqual(len(windows), 1)
+            self.assertEqual(windows[0]["start"], 30)
+            self.assertEqual(windows[0]["end"], 60)
+            self.assertEqual(windows[0]["frames"], 31)
+
+    def test_short_dip_and_far_windows_do_not_merge(self):
+        from vbr.video import detect_persistent_misses
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            full = np.full((40, 40), 255, dtype=np.uint8)
+            empty = np.zeros((40, 40), dtype=np.uint8)
+            for index in range(100):
+                low = (10 <= index <= 9 + 3) or (50 <= index <= 59) or (80 <= index <= 89)
+                cv2.imwrite(
+                    str(directory / f"{index:06d}.png"), empty if low else full
+                )
+            windows = detect_persistent_misses(
+                directory, 100, min_coverage=0.5, min_window_frames=5,
+                merge_gap_frames=3,
+            )
+            starts = [window["start"] for window in windows]
+            self.assertNotIn(10, starts)  # 3-frame dip stays below the threshold
+            self.assertIn(50, starts)
+            self.assertIn(80, starts)
+
+    def test_missing_mask_counted_as_zero_coverage(self):
+        from vbr.video import detect_persistent_misses
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            full = np.full((40, 40), 255, dtype=np.uint8)
+            for index in range(40):
+                if index in (20, 21, 22):
+                    continue
+                cv2.imwrite(str(directory / f"{index:06d}.png"), full)
+            windows = detect_persistent_misses(
+                directory, 40, min_coverage=0.5, min_window_frames=3
+            )
+            self.assertEqual(len(windows), 1)
+            self.assertEqual(windows[0]["start"], 20)
+            self.assertEqual(windows[0]["end"], 22)
+
+    def test_miss_seed_requires_substantial_new_area(self):
+        from vbr.video import select_miss_seeds
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            current = np.zeros((40, 40), dtype=np.uint8)
+            current[10:20, 10:20] = 255
+            for frame_id in (20, 21, 22):
+                cv2.imwrite(str(directory / f"{frame_id:06d}.png"), current)
+            duplicates = np.zeros((40, 40), dtype=np.uint8)
+            duplicates[11:19, 11:19] = 255  # inside the current mask: no new area
+            expanding = np.zeros((40, 40), dtype=np.uint8)
+            expanding[10:20, 10:20] = 255
+            expanding[10:20, 30:35] = 255  # 5x10 = 50 new pixels
+            refinement = Path(temporary) / "refined"
+            refinement.mkdir()
+            cv2.imwrite(str(refinement / "000021.png"), duplicates)
+            cv2.imwrite(str(refinement / "000022.png"), expanding)
+            accepted, summary = select_miss_seeds(
+                refinement, directory, min_added_area_px=40
+            )
+            self.assertEqual(accepted, [22])
+            self.assertEqual(summary["rejected_frames"], 1)
+
+    def test_miss_seed_rejects_collapsing_candidate(self):
+        from vbr.video import select_miss_seeds
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            current = np.zeros((40, 40), dtype=np.uint8)
+            current[10:30, 10:30] = 255
+            cv2.imwrite(str(directory / "000010.png"), current)
+            shrunk = np.zeros((40, 40), dtype=np.uint8)
+            shrunk[13:27, 13:27] = 255  # 196 px < 0.5 * 400, far smaller
+            refinement = Path(temporary) / "refined"
+            refinement.mkdir()
+            cv2.imwrite(str(refinement / "000010.png"), shrunk)
+            accepted, summary = select_miss_seeds(
+                refinement, directory, min_added_area_px=1, min_keep_fraction=0.5
+            )
+            self.assertEqual(accepted, [])
+            self.assertEqual(summary["rejected_frames"], 1)
+
+    def test_miss_seed_rejects_explosive_coverage_growth(self):
+        from vbr.video import select_miss_seeds
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            current = np.zeros((40, 40), dtype=np.uint8)
+            current[10:20, 10:20] = 255  # 100 px = 6.25% coverage
+            cv2.imwrite(str(directory / "000030.png"), current)
+            greedy = np.full((40, 40), 255, dtype=np.uint8)  # 100% coverage
+            refinement = Path(temporary) / "refined"
+            refinement.mkdir()
+            cv2.imwrite(str(refinement / "000030.png"), greedy)
+            accepted, summary = select_miss_seeds(
+                refinement,
+                directory,
+                min_added_area_px=1,
+                max_coverage_increase=0.15,
+            )
+            self.assertEqual(accepted, [])
+            self.assertEqual(summary["rejected_frames"], 1)
+            moderate = np.zeros((40, 40), dtype=np.uint8)
+            moderate[10:20, 10:26] = 255  # 160 px = +3.75% coverage, within cap
+            cv2.imwrite(str(refinement / "000031.png"), moderate)
+            cv2.imwrite(str(directory / "000031.png"), current)
+            accepted2, _ = select_miss_seeds(
+                refinement,
+                directory,
+                min_added_area_px=1,
+                max_coverage_increase=0.15,
+            )
+            self.assertEqual(accepted2, [31])
+
+    def test_miss_seed_evidence_waives_coverage_cap(self):
+        from vbr.video import select_miss_seeds
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            current = np.zeros((40, 40), dtype=np.uint8)
+            current[10:20, 10:20] = 255
+            cv2.imwrite(str(directory / "000040.png"), current)
+            big = np.zeros((40, 40), dtype=np.uint8)
+            big[10:20, 10:20] = 255
+            big[10:36, 8:38] = 255  # far above the +15% coverage cap
+            refinement = Path(temporary) / "refined"
+            refinement.mkdir()
+            cv2.imwrite(str(refinement / "000040.png"), big)
+            residual = np.zeros((40, 40), dtype=np.uint8)
+            residual[12:36, 8:38] = 255  # most of the new area is copy-through
+            evidence = {40: residual > 0}
+            accepted, summary = select_miss_seeds(
+                refinement,
+                directory,
+                min_added_area_px=1,
+                max_coverage_increase=0.15,
+                evidence=evidence,
+                evidence_min_overlap=0.5,
+            )
+            self.assertEqual(accepted, [40])
+            self.assertEqual(summary["coverage_cap_waived"], 1)
+            wrong_evidence = {40: np.zeros((40, 40), dtype=bool)}
+            accepted2, _ = select_miss_seeds(
+                refinement,
+                directory,
+                min_added_area_px=1,
+                max_coverage_increase=0.15,
+                evidence=wrong_evidence,
+                evidence_min_overlap=0.5,
+            )
+            self.assertEqual(accepted2, [])
+
+    def test_derive_box_seeds_tracks_mask_blob_per_subwindow(self):
+        from vbr.video import derive_box_seeds
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for frame_id in range(60):
+                mask = np.zeros((100, 100), dtype=np.uint8)
+                mask[30:70, 40:80] = 255
+                cv2.imwrite(str(directory / f"{frame_id:06d}.png"), mask)
+            windows = [{"start": 0, "end": 59}]
+            seeds = derive_box_seeds(
+                directory, windows, subwindow_frames=30, expansion=0.4
+            )
+            self.assertEqual(len(seeds), 2)
+            first = seeds[0]
+            self.assertEqual(first["start"], 0)
+            self.assertEqual(first["end"], 29)
+            box = first["box"]
+            # Blob x 40..80 on width 100 -> expanded [0.24, 0.14, 0.96, 0.86].
+            self.assertAlmostEqual(box[0], 0.24, places=2)
+            self.assertAlmostEqual(box[2], 0.96, places=2)
+            self.assertAlmostEqual(box[1], 0.14, places=2)
+
+
+class TemporalSmoothTests(unittest.TestCase):
+    def test_warp_flow_applies_known_displacement(self):
+        from vbr.temporal_smooth import warp_flow
+
+        rng = np.random.default_rng(0)
+        texture = rng.integers(0, 255, (30, 40, 3), dtype=np.uint8)
+        flow = np.zeros((30, 40, 2), dtype=np.float32)
+        flow[..., 0] = 4.0
+        warped = warp_flow(texture, flow)
+        # Sampling at q + (4,0) keeps columns 4..end, replicate-filling the rim.
+        np.testing.assert_array_equal(warped[:, :-4], texture[:, 4:])
+        np.testing.assert_array_equal(
+            warped[:, -4:], np.tile(texture[:, -1:], (1, 4, 1))
+        )
+
+    def test_aligned_median_removes_camera_motion_ghost(self):
+        from vbr.temporal_smooth import aligned_median
+
+        rng = np.random.default_rng(1)
+        texture = rng.integers(0, 255, (40, 60, 3), dtype=np.uint8).astype(np.uint8)
+        frames = [np.roll(texture, step * 3, axis=1) for step in range(3)]
+        target = frames[1].copy()
+        target[20:30, 24:34] = rng.integers(0, 255, (10, 10, 3), dtype=np.uint8)
+        mask = np.zeros((40, 60), dtype=bool)
+        mask[20:30, 24:34] = True
+        back = np.zeros((40, 60, 2), dtype=np.float32)
+        back[..., 0] = -3.0
+        forward = np.zeros((40, 60, 2), dtype=np.float32)
+        forward[..., 0] = 3.0
+        smoothed, used = aligned_median(target, [frames[0], frames[2]], [back, forward], mask)
+        self.assertEqual(used, 3)
+        # The corrupted blob is replaced by the true background of frame 1.
+        np.testing.assert_array_equal(smoothed[mask], frames[1][mask])
+        # The naive median (no alignment) ghosts instead of restoring.
+        naive_stack = np.stack([frames[0], target, frames[2]], axis=0)
+        naive = np.median(naive_stack, axis=0).astype(np.uint8)
+        self.assertFalse(np.array_equal(naive[mask], frames[1][mask]))
+
+    def test_aligned_median_keeps_target_outside_mask(self):
+        from vbr.temporal_smooth import aligned_median
+
+        rng = np.random.default_rng(2)
+        target = rng.integers(0, 255, (20, 20, 3), dtype=np.uint8)
+        neighbor = target.copy()
+        zero_flow = np.zeros((20, 20, 2), dtype=np.float32)
+        mask = np.zeros((20, 20), dtype=bool)
+        mask[:5, :] = True
+        smoothed, used = aligned_median(target, [neighbor], [zero_flow], mask)
+        self.assertEqual(used, 2)
+        np.testing.assert_array_equal(smoothed[5:, :], target[5:, :])
 
 
 class WallDetectionTests(unittest.TestCase):
@@ -682,6 +1001,73 @@ class SLAMAdapterTests(unittest.TestCase):
 class InpaintingTests(unittest.TestCase):
     def test_ffmpeg_supports_h264_encoding(self):
         self.assertTrue(Path(_resolve_ffmpeg()).is_file())
+
+    def test_chunk_ranges_cover_full_video_with_overlap(self):
+        from vbr.models.inpainting import chunk_ranges
+
+        ranges = list(chunk_ranges(1000, 240, 60))
+        self.assertEqual(ranges[0][0], 0)
+        self.assertEqual(ranges[-1][1], 1000)
+        for index in range(1, len(ranges) - 1):
+            self.assertEqual(ranges[index][0], ranges[index - 1][1] - 60)
+            self.assertEqual(ranges[index][1] - ranges[index][0], 240)
+        self.assertEqual(ranges[-1][0], ranges[-2][1] - 60)
+        self.assertEqual(ranges[-1][1] - ranges[-1][0], 100)
+        covered = set()
+        for start, end in ranges:
+            covered.update(range(start, end))
+        self.assertEqual(covered, set(range(1000)))
+
+    def test_chunk_ranges_reject_invalid_params(self):
+        from vbr.models.inpainting import chunk_ranges
+
+        with self.assertRaises(ValueError):
+            list(chunk_ranges(1000, 100, 100))
+
+    def test_stitch_prefers_later_chunk_in_overlap(self):
+        import cv2 as cv2_module
+
+        from vbr.models.inpainting import _stitch_chunks
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write_chunk(name, values):
+                path = root / name
+                writer = cv2_module.VideoWriter(
+                    str(path),
+                    cv2_module.VideoWriter_fourcc(*"mp4v"),
+                    5,
+                    (16, 16),
+                )
+                for value in values:
+                    writer.write(np.full((16, 16, 3), value, dtype=np.uint8))
+                writer.release()
+                return path
+
+            first = write_chunk("first.mp4", [25] * 8)   # globals 0..7
+            second = write_chunk("second.mp4", [240] * 8)  # globals 4..11
+            stitched_path = root / "stitched.mp4"
+            total = _stitch_chunks(
+                [(0, 8, first), (4, 12, second)], stitched_path, 5.0
+            )
+            self.assertEqual(total, 12)
+            capture = cv2_module.VideoCapture(str(stitched_path))
+            frames = []
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                frames.append(int(frame[0, 0, 0]))
+            capture.release()
+            # mp4v is lossy, so classify each decoded frame by proximity:
+            # globals 0..3 come from chunk 1 (dark), 4..11 from chunk 2 (bright).
+            for index, value in enumerate(frames):
+                expected_dark = index < 4
+                if expected_dark:
+                    self.assertLess(value, 128)
+                else:
+                    self.assertGreater(value, 128)
 
 
 if __name__ == "__main__":

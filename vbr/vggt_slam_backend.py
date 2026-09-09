@@ -548,7 +548,8 @@ def main() -> None:
         "slam_elapsed_seconds": elapsed,
     }
     output.with_suffix(".json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    if rejected_foreground_points == 0:
+    mask_has_content = bool(np.any(foreground_masks))
+    if rejected_foreground_points == 0 and mask_has_content:
         raise RuntimeError("No foreground pixels reached VGGT-SLAM point filtering")
     print(
         f"Masked VGGT-SLAM reconstruction: {len(submap_scales)} submaps, "

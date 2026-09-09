@@ -173,6 +173,278 @@ def detect_mask_onsets(
     return events
 
 
+def detect_persistent_misses(
+    masks_dir,
+    expected_frames,
+    min_coverage=0.20,
+    min_window_frames=30,
+    merge_gap_frames=12,
+    max_windows=3,
+):
+    """Find sustained windows where foreground mask coverage stays low.
+
+    A persistent miss means an object stays visible across many frames while
+    the mask barely covers it (e.g. the 746-970 sofa), which lets ProPainter
+    copy the object back from unmasked neighbors. Single-frame dips, brief
+    occlusions and legitimately empty views must not trigger. Windows closer
+    than ``merge_gap_frames`` are joined, then the largest windows are kept.
+    """
+    frame_count = expected_frames or 0
+    coverages = np.zeros(frame_count, dtype=np.float64)
+    by_name = {}
+    for path in Path(masks_dir).glob("*.png"):
+        frame_id = int(path.stem)
+        if 0 <= frame_id < frame_count:
+            by_name[frame_id] = path
+    for frame_id in range(frame_count):
+        path = by_name.get(frame_id)
+        mask = _load_binary_mask(path) if path is not None else None
+        if mask is not None:
+            coverages[frame_id] = float(np.count_nonzero(mask)) / mask.size
+    low = coverages < min_coverage
+
+    runs = []
+    start = None
+    for frame_id in range(frame_count):
+        if low[frame_id] and start is None:
+            start = frame_id
+        elif not low[frame_id] and start is not None:
+            runs.append((start, frame_id - 1))
+            start = None
+    if start is not None:
+        runs.append((start, frame_count - 1))
+
+    merged = []
+    for run in runs:
+        if merged and run[0] - merged[-1][1] <= merge_gap_frames:
+            merged[-1] = (merged[-1][0], run[1])
+        else:
+            merged.append(run)
+
+    windows = []
+    for start, end in merged:
+        length = end - start + 1
+        if length < min_window_frames:
+            continue
+        segment = coverages[start : end + 1]
+        windows.append(
+            {
+                "start": int(start),
+                "end": int(end),
+                "frames": int(length),
+                "mean_coverage": float(segment.mean()),
+                "min_coverage": float(segment.min()),
+            }
+        )
+    windows.sort(key=lambda window: -window["frames"])
+    return windows[:max_windows]
+
+
+def select_miss_seeds(
+    refinement_dir,
+    masks_dir,
+    min_added_area_px=2000,
+    min_keep_fraction=0.5,
+    max_coverage_increase=None,
+    evidence=None,
+    evidence_min_overlap=0.5,
+):
+    """Choose refined window masks worth pinning as propagation seeds.
+
+    A refined mask is kept only when it adds substantial new foreground area
+    beyond the current propagated mask and does not collapse that frame's
+    existing coverage (candidate smaller than ``min_keep_fraction`` of the
+    current mask is rejected, as is a near-duplicate of it). With
+    ``max_coverage_increase`` set, candidates whose coverage grows more than
+    the current mask plus that fraction are rejected too, UNLESS most of the
+    new area overlaps ``evidence`` (copy-through residual regions where the
+    current video demonstrably still shows the object) — then the growth was
+    justified and the precision cap is waived.
+    """
+    refinement_dir = Path(refinement_dir)
+    masks_dir = Path(masks_dir)
+    accepted = []
+    rejected = 0
+    total_added = 0
+    waived = 0
+    for path in sorted(refinement_dir.glob("*.png"), key=lambda p: int(p.stem)):
+        frame_id = int(path.stem)
+        candidate = _load_binary_mask(path)
+        if candidate is None or not np.any(candidate):
+            continue
+        current = _load_binary_mask(masks_dir / path.name)
+        current = current if current is not None else np.zeros_like(candidate)
+        new_area = candidate & ~current
+        added = int(np.count_nonzero(new_area))
+        if added < min_added_area_px:
+            rejected += 1
+            continue
+        if np.any(current) and np.count_nonzero(candidate) < min_keep_fraction * np.count_nonzero(current):
+            rejected += 1
+            continue
+        if max_coverage_increase is not None:
+            current_coverage = float(np.count_nonzero(current)) / current.size
+            candidate_coverage = float(np.count_nonzero(candidate)) / candidate.size
+            growth = candidate_coverage - current_coverage
+            if growth > float(max_coverage_increase):
+                residual = evidence.get(frame_id) if evidence else None
+                if residual is not None:
+                    overlap = float((new_area & residual).sum()) / max(1, added)
+                    if overlap >= float(evidence_min_overlap):
+                        waived += 1
+                    else:
+                        rejected += 1
+                        continue
+                else:
+                    rejected += 1
+                    continue
+        accepted.append(int(path.stem))
+        total_added += added
+    return accepted, {
+        "accepted_stems": accepted,
+        "rejected_frames": rejected,
+        "total_added_px": total_added,
+        "coverage_cap_waived": waived,
+    }
+
+
+def derive_box_seeds(
+    masks_dir,
+    windows,
+    subwindow_frames=25,
+    expansion=0.4,
+    min_component_fraction=0.02,
+):
+    """Build normalized box prompts from the masks inside miss windows.
+
+    For each subwindow of each persistent-miss window the largest foreground
+    component's bounding box is expanded (the detected sliver is usually one
+    edge of the missed object) and rescaled to normalized [x1, y1, x2, y2].
+    Subwindows keep the box tracking the camera pan; components too small to
+    matter are skipped.
+    """
+    frame_size = None
+    by_frame = {}
+    for path in Path(masks_dir).glob("*.png"):
+        mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            continue
+        by_frame[int(path.stem)] = mask
+        if frame_size is None:
+            frame_size = mask.shape
+    if frame_size is None:
+        return []
+    height, width = frame_size
+    min_area = min_component_fraction * height * width
+    seeds = []
+    for window in windows:
+        start, end = int(window["start"]), int(window["end"])
+        subwindow_start = start
+        while subwindow_start <= end:
+            subwindow_end = min(end, subwindow_start + subwindow_frames - 1)
+            union = np.zeros((height, width), dtype=bool)
+            for frame_id in range(subwindow_start, subwindow_end + 1):
+                mask = by_frame.get(frame_id)
+                if mask is not None:
+                    union |= mask > 0
+            count, labels, stats, _ = cv2.connectedComponentsWithStats(
+                union.astype(np.uint8), connectivity=8
+            )
+            largest = None
+            for component in range(1, count):
+                area = int(stats[component, cv2.CC_STAT_AREA])
+                if area < min_area:
+                    continue
+                if largest is None or area > largest[0]:
+                    largest = (
+                        area,
+                        int(stats[component, cv2.CC_STAT_LEFT]),
+                        int(stats[component, cv2.CC_STAT_TOP]),
+                        int(stats[component, cv2.CC_STAT_WIDTH]),
+                        int(stats[component, cv2.CC_STAT_HEIGHT]),
+                    )
+            if largest is not None:
+                _, left, top, box_width, box_height = largest
+                x1 = max(0.0, (left - expansion * box_width) / width)
+                y1 = max(0.0, (top - expansion * box_height) / height)
+                x2 = min(1.0, (left + box_width + expansion * box_width) / width)
+                y2 = min(1.0, (top + box_height + expansion * box_height) / height)
+                seeds.append(
+                    {
+                        "start": subwindow_start,
+                        "end": subwindow_end,
+                        "box": [round(x1, 3), round(y1, 3), round(x2, 3), round(y2, 3)],
+                    }
+                )
+            subwindow_start = subwindow_end + 1
+    return seeds
+
+
+def copy_through_evidence(
+    original_video,
+    background_video,
+    masks_dir,
+    frame_ids,
+    threshold=11.0,
+    dilate_px=5,
+):
+    """Copy-through residual regions for the queried frames.
+
+    Pixels INSIDE the (eroded) inpaint masks where the current background
+    video is still nearly identical to the original frame mark parts of the
+    object that survived inpainting. These are the regions a new seed must
+    remove, used to waive the coverage cap for seed candidates that
+    demonstrably target them.
+    """
+    wanted = set(int(frame_id) for frame_id in frame_ids)
+    originals = {}
+    for index, frame in enumerate(_iter_video_frames(original_video)):
+        if index in wanted:
+            originals[index] = frame
+        if len(originals) >= len(wanted):
+            break
+    backgrounds = {}
+    for index, frame in enumerate(_iter_video_frames(background_video)):
+        if index in wanted:
+            backgrounds[index] = frame
+        if len(backgrounds) >= len(wanted):
+            break
+    kernel = np.ones((max(1, dilate_px), max(1, dilate_px)), np.uint8)
+    evidence = {}
+    for frame_id in wanted:
+        if frame_id not in originals or frame_id not in backgrounds:
+            continue
+        mask = cv2.imread(
+            str(Path(masks_dir) / f"{frame_id:06d}.png"), cv2.IMREAD_GRAYSCALE
+        )
+        if mask is None:
+            continue
+        inner = cv2.erode((mask > 0).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+        if not inner.any():
+            continue
+        diff = cv2.absdiff(originals[frame_id], backgrounds[frame_id]).astype(
+            np.float32
+        ).mean(axis=2)
+        residual = (diff < threshold) & inner
+        if residual.any():
+            evidence[frame_id] = cv2.dilate(
+                residual.astype(np.uint8), kernel
+            ) > 0
+    return evidence
+
+
+def _iter_video_frames(video_path):
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            yield frame
+    finally:
+        capture.release()
+
+
 def onset_latency_metrics(
     baseline_dir,
     refined_dir,

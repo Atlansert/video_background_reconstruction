@@ -23,12 +23,16 @@ from .models.slam import SLAMAdapter
 from .models.inpainting import ProPainterAdapter, _resolve_ffmpeg
 from .prompts import resolve_prompts
 from .video import (
+    copy_through_evidence,
+    derive_box_seeds,
     detect_mask_onsets,
+    detect_persistent_misses,
     extract_frame_sets,
     fill_enclosed_mask_holes,
     mask_statistics,
     onset_latency_metrics,
     prepare_inpainting_masks,
+    select_miss_seeds,
     stabilize_foreground_masks,
     video_info,
     write_background_video,
@@ -166,7 +170,7 @@ def _refine_onset_seeds(
     """Add dense SAM 3.1 seeds just before persistent foreground onsets."""
     onset_cfg = segmentation_cfg.get("onset_refinement", {})
     if not onset_cfg.get("enabled", True):
-        return [], {"enabled": False, "events": []}
+        return [], {"enabled": False, "events": []}, None
     events = detect_mask_onsets(
         masks,
         min_new_area_px=int(onset_cfg.get("min_new_area_px", 3500)),
@@ -178,7 +182,7 @@ def _refine_onset_seeds(
     events = sorted(events, key=lambda event: -event["new_area_px"])[:max_events]
     events.sort(key=lambda event: event["frame_id"])
     if not events:
-        return [], {"enabled": True, "events": [], "refined_seed_frames": []}
+        return [], {"enabled": True, "events": [], "refined_seed_frames": []}, None
 
     lookback = int(onset_cfg.get("lookback_frames", 12))
     forward = int(onset_cfg.get("forward_frames", 6))
@@ -214,7 +218,7 @@ def _refine_onset_seeds(
             "candidate_frames": frame_ids,
             "refined_seed_frames": [],
             "warning": "SAM 3.1 refinement returned no non-empty masks",
-        }
+        }, augmented_dir
 
     baseline_dir = output_dir / "masks_onset_baseline"
     shutil.rmtree(baseline_dir, ignore_errors=True)
@@ -259,7 +263,142 @@ def _refine_onset_seeds(
     (output_dir / "onset_events.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"
     )
-    return improved_seed_frames, report
+    return improved_seed_frames, report, augmented_dir
+
+
+def _refine_miss_windows(
+    segmentation_cfg, all_frames, augmented_dir, masks, output_dir, logs_dir, frame_count,
+    original_video=None,
+):
+    """Add dense SAM 3.1 seeds inside sustained low-coverage windows.
+
+    Windows where the mask stays nearly empty for many frames let ProPainter
+    copy the missed object back from unmasked neighbors (the 746-970 sofa).
+    Dense probing with extra sofa-family prompts re-segments only those
+    windows; seeds that add substantial area are pinned and SAM2 repropagates
+    the full clip. Other frames keep the precise masks untouched.
+    """
+    miss_cfg = segmentation_cfg.get("miss_refinement", {})
+    if not miss_cfg.get("enabled", True):
+        return [], {"enabled": False, "windows": []}
+    windows = detect_persistent_misses(
+        masks,
+        frame_count,
+        min_coverage=float(miss_cfg.get("min_coverage", 0.20)),
+        min_window_frames=int(miss_cfg.get("min_window_frames", 30)),
+        merge_gap_frames=int(miss_cfg.get("merge_gap_frames", 12)),
+        max_windows=int(miss_cfg.get("max_windows", 3)),
+    )
+    if not windows:
+        return [], {"enabled": True, "windows": [], "probed_frames": 0}
+
+    stride = max(1, int(miss_cfg.get("window_stride", 2)))
+    frame_ids = sorted(
+        {
+            frame_id
+            for window in windows
+            for frame_id in range(window["start"], window["end"] + 1, stride)
+        }
+    )
+    configured_boxes = miss_cfg.get("box_seeds")
+    if configured_boxes is None:
+        configured_boxes = derive_box_seeds(
+            masks,
+            windows,
+            subwindow_frames=int(miss_cfg.get("box_subwindow_frames", 25)),
+            expansion=float(miss_cfg.get("box_expansion", 0.4)),
+        )
+    # The refinement subset holds strided frame ids; box specs index that
+    # subset locally, so global [start, end] ranges map to subset positions.
+    def to_local(spec: dict) -> dict | None:
+        local_start = next(
+            (position for position, frame_id in enumerate(frame_ids)
+             if frame_id >= int(spec["start"])),
+            None,
+        )
+        local_end = next(
+            (position for position in range(len(frame_ids) - 1, -1, -1)
+             if frame_ids[position] <= int(spec["end"])),
+            None,
+        )
+        if local_start is None or local_end is None or local_start > local_end:
+            return None
+        return {**spec, "start": local_start, "end": local_end}
+
+    box_prompts = [
+        spec
+        for spec in (to_local(entry) for entry in configured_boxes or [])
+        if spec is not None
+    ]
+    refinement_dir = output_dir / "masks_miss_refinement"
+    shutil.rmtree(refinement_dir, ignore_errors=True)
+    adapter = SegmentationAdapter(segmentation_cfg, PROJECT_ROOT)
+    adapter.run_refinement_masks(
+        frame_ids,
+        all_frames,
+        refinement_dir,
+        logs_dir,
+        extra_prompts=list(miss_cfg.get("extra_prompts", [])),
+        extra_prompt_thresholds=dict(miss_cfg.get("extra_prompt_thresholds", {})),
+        box_prompts=box_prompts,
+    )
+    evidence = None
+    current_video = output_dir / "background_video.mp4"
+    current_inpaint_masks = output_dir / "masks_inpaint"
+    if (
+        miss_cfg.get("evidence_enabled", True)
+        and original_video is not None
+        and current_video.exists()
+        and current_inpaint_masks.exists()
+    ):
+        evidence = copy_through_evidence(
+            original_video,
+            current_video,
+            current_inpaint_masks,
+            frame_ids,
+            dilate_px=int(miss_cfg.get("evidence_dilate_px", 5)),
+        )
+    accepted_seed_frames, selection = select_miss_seeds(
+        refinement_dir,
+        masks,
+        min_added_area_px=int(miss_cfg.get("min_added_area_px", 2000)),
+        min_keep_fraction=float(miss_cfg.get("min_keep_fraction", 0.5)),
+        max_coverage_increase=miss_cfg.get("max_coverage_increase"),
+        evidence=evidence,
+        evidence_min_overlap=float(miss_cfg.get("evidence_min_overlap", 0.5)),
+    )
+    report = {
+        "enabled": True,
+        "windows": windows,
+        "probed_frames": len(frame_ids),
+        "candidate_frames": frame_ids,
+        "box_prompts": box_prompts or [],
+        "evidence_frames": len(evidence) if evidence else 0,
+        "accepted_seed_frames": accepted_seed_frames,
+        **selection,
+    }
+    if accepted_seed_frames:
+        for stem in accepted_seed_frames:
+            seed_path = refinement_dir / f"{stem:06d}.png"
+            if seed_path.exists():
+                shutil.copy2(seed_path, augmented_dir / seed_path.name)
+        baseline_dir = output_dir / "masks_miss_baseline"
+        shutil.rmtree(baseline_dir, ignore_errors=True)
+        shutil.copytree(masks, baseline_dir)
+        shutil.rmtree(masks, ignore_errors=True)
+        masks.mkdir(parents=True, exist_ok=True)
+        sam2_report = adapter.propagate(
+            all_frames,
+            augmented_dir,
+            masks,
+            logs_dir,
+            log_name="sam2_miss_refinement.log",
+        )
+        report["sam2"] = sam2_report
+    (output_dir / "miss_windows.json").write_text(
+        json.dumps(report, indent=2), encoding="utf-8"
+    )
+    return accepted_seed_frames, report
 
 
 def _ensure_frames(video_path, info, all_frames, keyframes, stride):
@@ -273,7 +412,7 @@ def _ensure_frames(video_path, info, all_frames, keyframes, stride):
     return extract_frame_sets(video_path, all_frames, keyframes, stride)
 
 
-def run(cfg, stop_after="all", force=False, refine_onsets=False):
+def run(cfg, stop_after="all", force=False, refine_onsets=False, refine_misses=False):
     started = time.time()
     input_video = (PROJECT_ROOT / cfg["input_video"]).resolve()
     output_dir = (PROJECT_ROOT / cfg["output_dir"]).resolve()
@@ -356,9 +495,11 @@ def run(cfg, stop_after="all", force=False, refine_onsets=False):
             )
 
         onset_seed_ids = []
+        miss_seed_ids = []
         onset_report = {"enabled": False, "events": [], "refined_seed_frames": []}
+        miss_report = {"enabled": False, "windows": []}
         if segmentation_ran or refine_onsets:
-            onset_seed_ids, onset_report = _refine_onset_seeds(
+            onset_seed_ids, onset_report, onset_augmented_dir = _refine_onset_seeds(
                 segmentation_cfg,
                 all_frames,
                 key_masks,
@@ -367,7 +508,34 @@ def run(cfg, stop_after="all", force=False, refine_onsets=False):
                 output_dir / "logs",
                 info["frames"],
             )
-        segmentation_seed_ids = sorted(set(keyframe_ids) | set(onset_seed_ids))
+        else:
+            onset_augmented_dir = None
+        if segmentation_ran or refine_onsets or refine_misses:
+            shared_seed_dir = onset_augmented_dir
+            if shared_seed_dir is None:
+                shared_seed_dir = output_dir / "masks_keyframes_sam31_onset"
+                if not shared_seed_dir.exists():
+                    shutil.copytree(key_masks, shared_seed_dir)
+            miss_seed_ids, miss_report = _refine_miss_windows(
+                segmentation_cfg,
+                all_frames,
+                shared_seed_dir,
+                masks,
+                output_dir,
+                output_dir / "logs",
+                info["frames"],
+                original_video=input_video,
+            )
+            if not onset_seed_ids and not segmentation_ran:
+                # Cached path: the augmented dir already holds the onset
+                # seeds, so pin everything it contains rather than losing
+                # them from the stabilization pin set.
+                onset_seed_ids = sorted(
+                    int(path.stem) for path in shared_seed_dir.glob("*.png")
+                )
+        segmentation_seed_ids = sorted(
+            set(keyframe_ids) | set(onset_seed_ids) | set(miss_seed_ids)
+        )
         filled_hole_pixels = fill_enclosed_mask_holes(masks)
         stabilize_report = {"changed_frames": 0, "changed_pixels": 0, "pinned_frames": 0}
         if segmentation_cfg.get("temporal_stabilize", True):
@@ -389,6 +557,7 @@ def run(cfg, stop_after="all", force=False, refine_onsets=False):
         mask_report["filled_enclosed_hole_pixels"] = filled_hole_pixels
         mask_report["temporal_stabilize"] = stabilize_report
         mask_report["onset_refinement"] = onset_report
+        mask_report["miss_refinement"] = miss_report
         if mask_report["files"] != info["frames"] or mask_report["mean_coverage"] <= 0:
             raise RuntimeError(f"Invalid foreground masks: {mask_report}")
         status["stages"]["segmentation"] = {
@@ -589,6 +758,11 @@ def main():
         action="store_true",
         help="Re-run first-appearance refinement on existing segmentation masks",
     )
+    run_parser.add_argument(
+        "--refine-misses",
+        action="store_true",
+        help="Re-run sustained low-coverage window refinement on existing masks",
+    )
     doctor_parser = subparsers.add_parser("doctor")
     doctor_parser.add_argument("--config", default="configs/default.yaml")
     args = parser.parse_args()
@@ -598,6 +772,7 @@ def main():
             stop_after=args.stop_after,
             force=args.force,
             refine_onsets=args.refine_onsets,
+            refine_misses=args.refine_misses,
         )
     elif args.command == "doctor":
         doctor(load_config(args.config))

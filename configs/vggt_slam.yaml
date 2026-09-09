@@ -32,6 +32,32 @@ segmentation:
     forward_frames: 6
     overlap_fraction: 0.5
     max_events: 20
+  miss_refinement:
+    enabled: true
+    min_coverage: 0.20
+    min_window_frames: 30
+    merge_gap_frames: 12
+    max_windows: 3
+    window_stride: 2
+    min_added_area_px: 2000
+    min_keep_fraction: 0.5
+    # Box seeds: null -> derive per-subwindow boxes from the existing mask
+    # blobs (expanded); a list overrides with manual {start, end, box, prompt?}.
+    box_seeds: null
+    box_subwindow_frames: 25
+    box_expansion: 0.4
+    max_coverage_increase: 0.15
+    evidence_enabled: true
+    evidence_dilate_px: 5
+    evidence_min_overlap: 0.5
+    extra_prompts: [sofa bed, loveseat, futon, armchair, sectional sofa, couch]
+    extra_prompt_thresholds:
+      sofa bed: 0.30
+      loveseat: 0.30
+      futon: 0.30
+      armchair: 0.30
+      sectional sofa: 0.30
+      couch: 0.30
   prompts:
     - furniture
     - television
@@ -110,11 +136,13 @@ geometry:
   max_planes: 12
   max_walls: 8
   min_wall_width: 0.3
-  plan_wall_detection: false
+  plan_wall_detection: true
   footprint_wall_fallback: true
   poisson_depth: 8
   mesh_max_points: 150000
   mesh_target_triangles: 250000
+  mesh_min_component_triangles: 100
+  mesh_fill_hole_max_edges: 60
   use_tsdf: true
   tsdf_trunc: 0.15
   depth_trunc_quantile: 0.995
@@ -145,6 +173,18 @@ video_completion:
   preset: medium
   allow_temporal_fallback: true
   temporal_offsets: [15, -15, 30, -30, 60, -60]
+  chunks:
+    # Full-video n=80 OOMs in a single run; chunked runs keep per-chunk
+    # memory bounded and stitch overlapping outputs. Evaluate on the 760-990
+    # clip before enabling wholesale.
+    enabled: false
+    size: 240
+    overlap: 60
+  temporal_smooth:
+    # Flow-aligned 3-frame median inside the inpaint masks; replaces the
+    # naive pixel median that smeared texture under camera motion.
+    enabled: true
+    kernel: 3
 gpt:
   enabled: false
   provider: null

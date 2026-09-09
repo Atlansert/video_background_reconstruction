@@ -17,7 +17,7 @@ import argparse
 import json
 from pathlib import Path
 
-from vbr.cli import PROJECT_ROOT, _refine_miss_windows
+from vbr.cli import PROJECT_ROOT, _refine_miss_windows, update_pipeline_status
 from vbr.config import load_config
 from vbr.models.inpainting import ProPainterAdapter
 from vbr.models.segmentation import SegmentationAdapter
@@ -124,6 +124,18 @@ def main():
         output_dir / "background_video.mp4",
         info["fps"],
     )
+
+    def record(status):
+        status["stages"]["inpainting_masks"] = {"state": "complete", **inpaint_report}
+        status["stages"]["video"] = {"state": "complete", **video_report}
+        status["miss_refinement_driver"] = {
+            "seeds": miss_seed_ids,
+            "report": miss_report,
+            "stabilize": stabilize_report,
+        }
+        status["state"] = "complete"
+
+    update_pipeline_status(output_dir, record)
     print(json.dumps({"miss": miss_report, "stabilize": stabilize_report,
                       "inpaint_masks": inpaint_report, "video": video_report},
                      indent=2, ensure_ascii=False)[-2500:])

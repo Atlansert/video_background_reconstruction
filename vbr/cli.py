@@ -167,7 +167,13 @@ def _load_opening_hints(output_dir: Path, cfg, all_frames: Path, slam_result: di
 def _refine_onset_seeds(
     segmentation_cfg, all_frames, key_masks, masks, output_dir, logs_dir, frame_count
 ):
-    """Add dense SAM 3.1 seeds just before persistent foreground onsets."""
+    """Add dense SAM 3.1 seeds just before persistent foreground onsets.
+
+    Note: this rebuilds the augmented seed dir from the base keyframes, so
+    miss-window seeds merged by earlier runs are dropped here; the pipeline
+    re-derives them in _refine_miss_windows right after this stage whenever
+    refinement runs, so the final seed set stays complete.
+    """
     onset_cfg = segmentation_cfg.get("onset_refinement", {})
     if not onset_cfg.get("enabled", True):
         return [], {"enabled": False, "events": []}, None
@@ -402,14 +408,56 @@ def _refine_miss_windows(
 
 
 def _ensure_frames(video_path, info, all_frames, keyframes, stride):
+    """Return keyframe ids, regenerating cached frames when the source moved.
+
+    Frame caches previously only checked counts, so replacing the input video
+    with another of the same length silently reused stale frames. A small
+    marker file records the source stat + shape and forces re-extraction on
+    any mismatch.
+    """
+    marker_path = all_frames / "video_source.json"
+    marker = {
+        "path": str(Path(video_path).resolve()),
+        "size": Path(video_path).stat().st_size,
+        "mtime_ns": Path(video_path).stat().st_mtime_ns,
+        "frames": info["frames"],
+        "width": info["width"],
+        "height": info["height"],
+        "fps": info["fps"],
+        "stride": int(stride),
+    }
+    cached_marker = None
+    try:
+        cached_marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cached_marker = None
     expected_keyframes = len(set(range(0, info["frames"], stride)) | {info["frames"] - 1})
     all_count = len(list(all_frames.glob("*.jpg")))
     key_count = len(list(keyframes.glob("*.jpg")))
-    if all_count == info["frames"] and key_count == expected_keyframes:
+    if cached_marker == marker and all_count == info["frames"] and key_count == expected_keyframes:
         return sorted(int(path.stem) for path in keyframes.glob("*.jpg"))
     _clear_generated(all_frames, (".jpg",))
     _clear_generated(keyframes, (".jpg",))
-    return extract_frame_sets(video_path, all_frames, keyframes, stride)
+    keyframe_ids = extract_frame_sets(video_path, all_frames, keyframes, stride)
+    marker_path.write_text(json.dumps(marker, indent=2), encoding="utf-8")
+    return keyframe_ids
+
+
+def update_pipeline_status(output_dir: Path, patch: callable) -> None:
+    """Rewrite pipeline_status.json through ``patch(status)``.
+
+    The tool-stage drivers (refine_misses, apply_temporal_smooth,
+    rebuild_geometry_from_background) run outside ``cli.run``; this keeps the
+    status file honest about which stages the on-disk artifacts came from.
+    """
+    status_path = Path(output_dir) / "pipeline_status.json"
+    status = {}
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        status = {"state": "unknown", "stages": {}}
+    patch(status)
+    status_path.write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def run(cfg, stop_after="all", force=False, refine_onsets=False, refine_misses=False):
@@ -685,13 +733,21 @@ def doctor(cfg):
         cfg["segmentation"]["sam3_checkpoint"],
         cfg["segmentation"]["sam2_checkpoint"],
         cfg["slam"]["checkpoint"],
-        "checkpoints/propainter/ProPainter.pth",
-        "checkpoints/propainter/recurrent_flow_completion.pth",
-        "checkpoints/propainter/raft-things.pth",
     ]
     for value in required_files:
         path = (PROJECT_ROOT / value).resolve()
         checks.append({"check": str(path), "ok": path.exists()})
+    # ProPainterAdapter actually loads weights from the repo_dir, not from
+    # checkpoints/, so doctor must validate the same locations the stage uses.
+    repo_dir = (PROJECT_ROOT / cfg["video_completion"].get(
+        "repo_dir", "external/ProPainter")).resolve()
+    for value in (
+        repo_dir / "inference_propainter.py",
+        repo_dir / "weights" / "ProPainter.pth",
+        repo_dir / "weights" / "recurrent_flow_completion.pth",
+        repo_dir / "weights" / "raft-things.pth",
+    ):
+        checks.append({"check": str(value), "ok": value.exists()})
     if cfg["slam"].get("backend") == "vggt_slam":
         for value in (
             cfg["slam"].get(

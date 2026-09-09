@@ -155,14 +155,15 @@ def smooth_video(frames, masks, output_path, fps, repo_dir, raft_checkpoint, dev
             flows[1] = flows_next[index]
         mask = masks[index] if index < len(masks) else None
         smoothed, used = aligned_median(frame, neighbors, flows, mask)
-        if mask is not None and np.any(mask):
-            total_changed += int(np.count_nonzero(mask))
+        total_changed += int(np.count_nonzero(np.any(smoothed != frame, axis=2)))
         writer.write(smoothed)
     writer.release()
     return {
         "kernel": 3,
         "frames": len(frames),
-        "flow_aligned_frames_used": "2" if len(frames) > 2 else "1",
+        # Both neighbors are aligned for interior frames; the first/last
+        # frame median only sees one.
+        "aligned_neighbors": 2 if len(frames) > 2 else max(1, len(frames) - 1),
         "changed_pixels": total_changed,
         "output": str(output_path.resolve()),
     }

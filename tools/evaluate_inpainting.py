@@ -259,6 +259,13 @@ def main():
     report = evaluate(
         args.output_dir, args.input_video, args.stride, args.sample_frames, args.dilation_px
     )
+    # residue/flicker are measured against the reconstruction masks; the
+    # windowed copy-through uses the inpaint masks. Label both explicitly so
+    # cross-version comparisons cannot silently mix the two bases.
+    report["basis"] = {
+        "residue_flicker_masks": "masks",
+        "copy_through_masks": "masks_inpaint" if (args.output_dir / "masks_inpaint").exists() else "masks",
+    }
     masks_dir = args.output_dir / "masks"
     inpaint_masks = args.output_dir / "masks_inpaint"
     copy_masks_dir = inpaint_masks if inpaint_masks.exists() else masks_dir

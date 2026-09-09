@@ -51,12 +51,17 @@ def chunk_ranges(total, size, overlap):
 
 
 def _reindexed_copy(source_dir: Path, target_dir: Path, start: int, end: int, suffix: str):
+    """Copy ``source_dir`` frames [start, end) into a freshly reindexed dir.
+
+    The target is wiped first: mask PNGs of equal byte size but different
+    content (and chunk-size changes) otherwise turn into stale inputs on
+    re-runs.
+    """
+    shutil.rmtree(target_dir, ignore_errors=True)
     target_dir.mkdir(parents=True, exist_ok=True)
     paths = sorted(source_dir.glob(f"*{suffix}"), key=lambda p: int(p.stem))
     for local, path in enumerate(paths[start:end]):
-        destination = target_dir / f"{local:06d}{suffix}"
-        if not destination.exists() or destination.stat().st_size != path.stat().st_size:
-            shutil.copy2(path, destination)
+        shutil.copy2(path, target_dir / f"{local:06d}{suffix}")
 
 
 def _stitch_chunks(chunk_outputs: list[tuple[int, int, Path]], output_path: Path, fps: float):
@@ -192,6 +197,7 @@ class ProPainterAdapter:
                 )
             )
             work_root = result_root / "chunks"
+            shutil.rmtree(work_root, ignore_errors=True)
             raw_output = result_root / "combined.mp4"
             chunk_outputs = []
             for chunk_index, (start, end) in enumerate(ranges):
@@ -216,9 +222,10 @@ class ProPainterAdapter:
                 "neighbor_length": int(self.cfg.get("neighbor_length", 40)),
             }
         else:
-            single_output = result_root / Path(frames_dir).name
+            # ProPainter writes <output>/<video-dir-name>/inpaint_out.mp4, so
+            # pass result_root itself to get the flat frames_all/ layout.
             raw_output = run_inference(
-                Path(frames_dir), Path(masks_dir), single_output, "propainter.log"
+                Path(frames_dir), Path(masks_dir), result_root, "propainter.log"
             )
         raw_output = Path(raw_output)
         output_path = Path(output_path)

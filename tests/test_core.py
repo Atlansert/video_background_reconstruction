@@ -1069,6 +1069,58 @@ class InpaintingTests(unittest.TestCase):
                 else:
                     self.assertGreater(value, 128)
 
+    def test_reindexed_copy_wipes_stale_target_files(self):
+        from vbr.models.inpainting import _reindexed_copy
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            cv2.imwrite(str(source / "000000.png"), np.full((8, 8), 0, np.uint8))
+            cv2.imwrite(str(source / "000001.png"), np.full((8, 8), 255, np.uint8))
+            target = root / "target"
+            target.mkdir()
+            cv2.imwrite(str(target / "000000.png"), np.full((8, 8), 128, np.uint8))
+            cv2.imwrite(str(target / "000002.png"), np.full((8, 8), 128, np.uint8))
+            _reindexed_copy(source, target, 0, 2, ".png")
+            remaining = sorted(p.stem for p in target.glob("*.png"))
+            self.assertEqual(remaining, ["000000", "000001"])  # stale 000002 gone
+            copied = cv2.imread(str(target / "000000.png"), cv2.IMREAD_GRAYSCALE)
+            self.assertEqual(int(copied[0, 0]), 0)  # fresh content, not stale 128
+
+    def test_frame_cache_invalidates_on_source_marker_mismatch(self):
+        import cv2 as cv2_module
+
+        from vbr.cli import _ensure_frames
+        from vbr.video import video_info
+
+        def write_video(path, value, frames=5):
+            writer = cv2_module.VideoWriter(
+                str(path), cv2_module.VideoWriter_fourcc(*"mp4v"), 5, (40, 40)
+            )
+            for _ in range(frames):
+                writer.write(np.full((40, 40, 3), value, dtype=np.uint8))
+            writer.release()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video = root / "video.mp4"
+            write_video(video, 30)
+            info = video_info(video)
+            all_frames = root / "frames_all"
+            keyframes = root / "frames_keyframes"
+            keyframe_ids = _ensure_frames(video, info, all_frames, keyframes, 2)
+            self.assertEqual(keyframe_ids, [0, 2, 4])
+            first = cv2_module.imread(str(all_frames / "000000.jpg"))
+            self.assertLess(int(first[0, 0, 0]), 128)
+            # Same frame count, different content: the marker must force a
+            # re-extraction instead of reusing the cached frames.
+            write_video(video, 220)
+            fresh_info = video_info(video)
+            _ensure_frames(video, fresh_info, all_frames, keyframes, 2)
+            reextracted = cv2_module.imread(str(all_frames / "000000.jpg"))
+            self.assertGreater(int(reextracted[0, 0, 0]), 128)
+
 
 if __name__ == "__main__":
     unittest.main()

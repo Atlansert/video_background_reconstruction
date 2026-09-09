@@ -19,7 +19,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from vbr.cli import PROJECT_ROOT, _resolve_ffmpeg
+from vbr.cli import PROJECT_ROOT, _resolve_ffmpeg, update_pipeline_status
 from vbr.config import load_config
 from vbr.models.inpainting import ProPainterAdapter
 from vbr.video import video_info
@@ -101,6 +101,15 @@ def main():
     (output_dir / "post_temporal_smooth.json").write_text(
         json.dumps(offset_report, indent=2), encoding="utf-8"
     )
+
+    def record(status):
+        status.setdefault("stages", {})["video"] = {
+            "state": "complete",
+            "method": "propainter",
+            "temporal_smooth_applied": offset_report,
+        }
+
+    update_pipeline_status(output_dir, record)
     print(json.dumps(offset_report, indent=2))
 
 

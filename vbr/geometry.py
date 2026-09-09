@@ -788,8 +788,12 @@ def _ear_clip(uv):
             break
         if not clipped:
             break
-    if len(remaining) == 3:
-        triangles.append((remaining[0], remaining[1], remaining[2]))
+    # A loop that could not be fully clipped (self-touching boundary chains,
+    # duplicate vertices) must not leave a partially triangulated patch: the
+    # caller treats [] as "skip this hole" and keeps the original boundary.
+    if len(remaining) != 3:
+        return []
+    triangles.append((remaining[0], remaining[1], remaining[2]))
     return triangles
 
 

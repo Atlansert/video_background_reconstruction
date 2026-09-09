@@ -27,7 +27,7 @@ import cv2
 import numpy as np
 import open3d as o3d
 
-from vbr.cli import PROJECT_ROOT, _load_opening_hints
+from vbr.cli import PROJECT_ROOT, _load_opening_hints, update_pipeline_status
 from vbr.config import load_config
 from vbr.geometry import build_mesh, save_pointcloud
 from vbr.interactive import write_html
@@ -36,7 +36,14 @@ from vbr.video import video_info
 
 
 def extract_background_frames(output_dir: Path) -> Path:
+    """Re-extract every frame from the current background video.
+
+    The cache is wiped first: the previous version only checked file
+    existence, so a regenerated background_video.mp4 with the same frame
+    count silently fed stale frames into the depth re-estimation.
+    """
     background_frames = output_dir / "frames_background"
+    shutil.rmtree(background_frames, ignore_errors=True)
     background_frames.mkdir(parents=True, exist_ok=True)
     video_path = output_dir / "background_video.mp4"
     info = video_info(video_path)
@@ -62,12 +69,11 @@ def extract_background_frames(output_dir: Path) -> Path:
 
 def write_empty_masks(mask_dir: Path, frame_count: int) -> Path:
     mask_dir = Path(mask_dir)
+    shutil.rmtree(mask_dir, ignore_errors=True)
     mask_dir.mkdir(parents=True, exist_ok=True)
     blank = np.zeros((540, 960), dtype=np.uint8)
     for index in range(frame_count):
-        path = mask_dir / f"{index:06d}.png"
-        if not path.exists():
-            cv2.imwrite(str(path), blank)
+        cv2.imwrite(str(mask_dir / f"{index:06d}.png"), blank)
     return mask_dir
 
 
@@ -159,6 +165,23 @@ def main():
         ),
         encoding="utf-8",
     )
+
+    def record(status):
+        status["stages"]["reconstruction"] = {
+            "state": "complete",
+            **slam_result["report"],
+        }
+        status["stages"]["geometry"] = {
+            "state": "complete",
+            "opening_hints": len(opening_hints) if opening_hints else 0,
+            **geometry_report,
+        }
+        status["geometry_redepth"] = {
+            "input": "background_video.mp4",
+            "submap_scales": scale_diagnosis,
+        }
+
+    update_pipeline_status(output_dir, record)
     print(json.dumps(
         {
             "wall_source": geometry_report["room"]["wall_source"],

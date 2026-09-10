@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Large data (managed outside git; see HANDOFF.md)
+# Large data (managed outside git)
 checkpoints/
 outputs/
 video/

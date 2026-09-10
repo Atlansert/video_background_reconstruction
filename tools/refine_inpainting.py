@@ -131,7 +131,7 @@ def main():
     background_video = root / "background_video.mp4"
     info = video_info(video_path)
 
-    shutil.copytree(masks_inpaint, root / "masks_inpaint_pass1_backup", dirs_exist_ok=True)
+    shutil.copytree(masks_inpaint, root / "snapshots" / "masks" / "masks_inpaint_pass1_backup", dirs_exist_ok=True)
     adapter = ProPainterAdapter(cfg["video_completion"], project_root)
     rounds_done = 0
     for round_index in range(1, args.max_rounds + 1):

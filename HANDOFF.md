@@ -83,7 +83,7 @@
 | 边界/内部 XOR 比 | 3.51 | 1.61 |
 | 1 帧闪烁（关/开） | 0.00080 / 0.00070 | 0.00017 / 0.00016 |
 
-旧独立区间 mask 备份在 `outputs/001_sam31_slam/masks_independent_backup/`；旧背景视频备份在 `background_video_independent_masks.mp4`。`outputs/001_sam31/` 回归基线未改。测试 22 项。配置项：`sam2_dual_anchor`、`temporal_stabilize`、`temporal_xor_threshold`、`temporal_blend_window`。
+旧独立区间 mask 备份在 `outputs/001_sam31_slam/snapshots/masks/masks_independent_backup/`；旧背景视频备份在 `snapshots/videos/background_video_independent_masks.mp4`。`outputs/001_sam31/` 回归基线未改。测试 22 项。配置项：`sam2_dual_anchor`、`temporal_stabilize`、`temporal_xor_threshold`、`temporal_blend_window`。
 
 用新 mask 重跑 ProPainter 后：残留均值 48.96→46.64，闪烁比 1.087→1.115。mask 层 1 帧闪烁降了约 5 倍。随后发现视频里物体仍会闪，根因是邻帧未遮住的物体被光流拷回，见 2.5。
 
@@ -105,7 +105,7 @@
 | 闪烁比 | 1.13 | 0.82 |
 | 残留均值 | 46.6 | 55.4 |
 
-残留升高是预期：原物体更少被原样留下。仍偏高的 780–900 是 SAM 长时间漏检沙发。产物：`background_video.mp4`，overlay `mask_overlay_inpaint.mp4`。旧视频备份 `background_video_dual_anchor.mp4`。
+残留升高是预期：原物体更少被原样留下。仍偏高的 780–900 是 SAM 长时间漏检沙发。产物：`background_video.mp4`，overlay `mask_overlay_inpaint.mp4`。旧视频备份 `snapshots/videos/background_video_dual_anchor.mp4`。
 
 ### 2.6 2026-09-07：inpaint mask 精确优先
 
@@ -113,7 +113,7 @@
 
 当前默认策略：`close_px=9`、`temporal_radius=2`、`expand_px=1`，禁用凸包和长时并集；ProPainter 仍保留内部 `mask_dilation=8`。新增指标 `mean_extra_coverage`、`p90_coverage`、`max_coverage`、`extra_coverage_ratio`。
 
-精确 inpaint mask：均值覆盖率 0.371（额外 0.034），P90 0.556，最高 0.605；旧门控版均值 0.533。视频评估：闪烁比 0.967（仍低于 1），拷贝率 0.158（旧门控版 0.080）。按用户优先级，当前 `background_video.mp4` 采用**精确版**，而不再以大面积背景误遮罩来降低残影；旧门控视频保留为 `background_video_gated_inpaint.mp4`，旧门控 mask 为 `masks_inpaint_gated_backup/`。测试 25 项。
+精确 inpaint mask：均值覆盖率 0.371（额外 0.034），P90 0.556，最高 0.605；旧门控版均值 0.533。视频评估：闪烁比 0.967（仍低于 1），拷贝率 0.158（旧门控版 0.080）。按用户优先级，当前 `background_video.mp4` 采用**精确版**，而不再以大面积背景误遮罩来降低残影；旧门控视频保留为 `snapshots/videos/background_video_gated_inpaint.mp4`，旧门控 mask 为 `snapshots/masks/masks_inpaint_gated_backup/`。测试 25 项。
 
 ### 2.7 2026-09-07：物体初次出现时 mask 不及时 → 首现精修（onset refinement）
 
@@ -127,7 +127,7 @@
 4. `onset_latency_metrics`：对比基线，**平均提前 8.65 帧，20 个事件中 18 个提前**；结果写入 `onset_events.json`。
 5. inpaint mask 仍保持 2.6 的精确策略，没有被扩大。
 
-视频评估（当前 vs 首现前精确版）：拷贝率 0.149 vs 0.175，拷贝>0.2 帧 64 vs 87，时序比 0.984 vs 1.031，残留 49.9，闪烁比 0.933。inpaint 覆盖率 0.383（源 0.343），未突破精确上限。重建/SLAM 已用新 mask 同步重跑。产物：`background_video.mp4`（当前）、`mask_overlay.mp4`、`mask_overlay_inpaint.mp4`；回退快照 `background_video_preonset.mp4`、`masks_preonset_backup/`。CLI 增加 `--refine-onsets`，可在已有分割结果上单独重跑首现精修；测试 27 项。
+视频评估（当前 vs 首现前精确版）：拷贝率 0.149 vs 0.175，拷贝>0.2 帧 64 vs 87，时序比 0.984 vs 1.031，残留 49.9，闪烁比 0.933。inpaint 覆盖率 0.383（源 0.343），未突破精确上限。重建/SLAM 已用新 mask 同步重跑。产物：`background_video.mp4`（当前）、`mask_overlay.mp4`、`mask_overlay_inpaint.mp4`；回退快照 `snapshots/videos/background_video_preonset.mp4`、`snapshots/masks/masks_preonset_backup/`。CLI 增加 `--refine-onsets`，可在已有分割结果上单独重跑首现精修；测试 27 项。
 
 ### 2.8 2026-09-08：前景扣除不干净 → 五个优化方向依次落地
 
@@ -139,7 +139,7 @@
 4. **ProPainter 参数搜索**（方向 3，工具 `tools/search_propainter_params.py`）：在 760–990 片段上网格搜索，`neighbor_length=80` 最优但全片 OOM（138GB），采用次优的 `neighbor_length=40, ref_stride=10`（拷贝 0.524→0.497）。
 5. **时序中值平滑**（方向 5，工具 `tools/post_temporal_smooth.py`）：对掩膜内部做 3 帧中值滤波，再 h264+aac 封装。时序比 0.992→0.945。
 
-最终视频指标（`video_evaluation.json` `vggt_slam_final_20260908`）：残留均值 50.4、闪烁比 0.949、拷贝率 0.136（路线起点 0.149）、mask 内时序比 0.945。inpaint mask 覆盖率保持 0.384+两遍反哺补丁，未回退到长时全局并集。测试 31 项。新工具：`tools/refine_inpainting.py`、`tools/search_propainter_params.py`、`tools/post_temporal_smooth.py`。回退：`background_video_n40_unsmoothed.mp4`（平滑前）、`masks_inpaint_pass1_backup/`（反哺前）。`outputs/001_sam31/` 回归基线始终未动。
+最终视频指标（`video_evaluation.json` `vggt_slam_final_20260908`）：残留均值 50.4、闪烁比 0.949、拷贝率 0.136（路线起点 0.149）、mask 内时序比 0.945。inpaint mask 覆盖率保持 0.384+两遍反哺补丁，未回退到长时全局并集。测试 31 项。新工具：`tools/refine_inpainting.py`、`tools/search_propainter_params.py`、`tools/post_temporal_smooth.py`。回退：`snapshots/videos/background_video_n40_unsmoothed.mp4`（平滑前）、`snapshots/masks/masks_inpaint_pass1_backup/`（反哺前）。`outputs/001_sam31/` 回归基线始终未动。
 
 ### 2.9 2026-09-09：视频伪影残余 + GLB 破碎/空洞 → 漏检窗口精修、光流平滑、背景视频重估深度
 
@@ -157,9 +157,9 @@
 
 6. **背景视频重估深度**（`tools/rebuild_geometry_from_background.py`）：从最终背景视频抽 1799 帧 + 全零 mask 重跑 vggt_slam（`vbr.vggt_slam_backend` 增加"空 mask 跳过护栏"判断）→ 前景区获得深度观测。点云 17,829→22,089，原始深度留存 21.4M→27.6M。
 7. **真墙替代假墙**：plan 视图墙线检测（`fit_wall_lines`）在重估后生效——`wall_source` 从 `robust_footprint_fallback`（4 面 AABB 假墙、9 个乱刻开口）变为 **`plan_ransac`（8 面真墙、开口 9→3）**；`plan_wall_detection: true` 默认开启。假墙兜底偏移改为近邻点中位数。
-8. **网格后处理**（`clean_mesh`：连通域过滤 81→3 组件、主件占 90%、耳切补洞 23 处）；修复 open3d `mesh +=` 与 numpy 视图别名的**指数级复制 bug**（16 次叠加后 6.17 亿顶点 → 全部改为一次性构建）。新 GLB：surface 4670 顶点、合并 4746 顶点/7970 三角、`background_scene.glb` 2026-09-09 版；旧版存 `background_scene_pre_redepth.glb`。子图尺度异常（0.23–1.0）已记录到报告（待后续归一化处理，未在本轮修复）。
+8. **网格后处理**（`clean_mesh`：连通域过滤 81→3 组件、主件占 90%、耳切补洞 23 处）；修复 open3d `mesh +=` 与 numpy 视图别名的**指数级复制 bug**（16 次叠加后 6.17 亿顶点 → 全部改为一次性构建）。新 GLB：surface 4670 顶点、合并 4746 顶点/7970 三角、`background_scene.glb` 2026-09-09 版；旧版存 `snapshots/geometry/background_scene_pre_redepth.glb`。子图尺度异常（0.23–1.0）已记录到报告（待后续归一化处理，未在本轮修复）。
 
-指标与产物：`video_evaluation.json` `vggt_slam_final_20260909`、`comparison_report.json` `video_iterations`/`glb_redepth_20260909`、`geometry_redepth_report.json`、`miss_windows.json`（含 evidence 统计）、`pipeline_status.json` `final_20260909`。回退快照：`background_video_unsmoothed.mp4`、`background_video_premiss.mp4`、`masks_premiss_backup/`、`background_mesh_pre_redepth.ply`、`background_scene_pre_redepth.glb`。测试 48 项（新增：漏检窗口检测、box 种子推导、证据豁免、耳切、补洞、chunk 拼接、光流 warp/中值）。`outputs/001_sam31/` 回归基线始终未动。
+指标与产物：`video_evaluation.json` `vggt_slam_final_20260909`、`comparison_report.json` `video_iterations`/`glb_redepth_20260909`、`geometry_redepth_report.json`、`miss_windows.json`（含 evidence 统计）、`pipeline_status.json` `final_20260909`。回退快照：`snapshots/videos/background_video_unsmoothed.mp4`、`snapshots/videos/background_video_premiss.mp4`、`snapshots/masks/masks_premiss_backup/`、`snapshots/geometry/background_mesh_pre_redepth.ply`、`snapshots/geometry/background_scene_pre_redepth.glb`。测试 48 项（新增：漏检窗口检测、box 种子推导、证据豁免、耳切、补洞、chunk 拼接、光流 warp/中值）。`outputs/001_sam31/` 回归基线始终未动。
 
 **剩余可做**：① 用户提供沙发归一化 box 后重跑 `tools/refine_misses.py`（≈50 分钟）；② 子图尺度归一化（修复 0.23–1.0 尺度漂移造成的地面叠影）；③ vggt_slam 重估深度的 `--reuse-slam` 缓存选项（当前每次全重跑）。
 
@@ -176,7 +176,7 @@
 
 **过程中发现并修复一个自造 bug**：`_ensure_frames` 的 `video_source.json` marker 起初写在 `frames_all/` 内，ProPainter 的目录读取器无差别 `imread` 每个文件导致 `cvtColor` 崩溃（cv2 空图断言）。修复：marker 移到 output_dir 根（`vbr/cli.py`），并新增回归测试断言 frames 目录只允许图像文件；`_clear_generated` 后由驱动单独重跑视频阶段恢复产物。测试 51 项。
 
-回退快照：`background_video_prekitchen.mp4`、`masks_prekitchen_backup/`、`masks_inpaint_prekitchen/`、`background_scene_prekitchen.glb`。
+回退快照：`snapshots/videos/background_video_prekitchen.mp4`、`snapshots/masks/masks_prekitchen_backup/`、`snapshots/masks/masks_inpaint_prekitchen/`、`snapshots/geometry/background_scene_prekitchen.glb`。
 
 - SAM2.1 分段时序传播到全部视频帧。
 - 封闭 mask 孔洞填充。

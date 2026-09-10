@@ -31,7 +31,8 @@ def main():
     parser.add_argument(
         "--keep-version",
         action="store_true",
-        help="keep the pre-smooth video as <output-dir>/background_video_unsmoothed.mp4",
+        help="keep the pre-smooth video under <output-dir>/snapshots/videos/"
+        "background_video_unsmoothed.mp4",
     )
     args = parser.parse_args()
 
@@ -43,8 +44,11 @@ def main():
     info = video_info(video_path)
 
     smooth_cfg = cfg.get("video_completion", {}).get("temporal_smooth", {})
-    if args.keep_version and not (output_dir / "background_video_unsmoothed.mp4").exists():
-        shutil.copy2(video_path, output_dir / "background_video_unsmoothed.mp4")
+    if args.keep_version:
+        snapshot = output_dir / "snapshots" / "videos" / "background_video_unsmoothed.mp4"
+        if not snapshot.exists():
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(video_path, snapshot)
 
     repo = (PROJECT_ROOT / cfg["video_completion"].get(
         "repo_dir", "external/ProPainter")).resolve()

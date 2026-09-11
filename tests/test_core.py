@@ -1146,5 +1146,88 @@ class InpaintingTests(unittest.TestCase):
             self.assertEqual(leftovers, [])
 
 
+class SVORTrialTests(unittest.TestCase):
+    def test_svor_chunk_ranges_keep_4k_plus_1_lengths(self):
+        from vbr.models.svor import svor_chunk_ranges
+
+        ranges = list(svor_chunk_ranges(200, 77, 20))
+        for start, end in ranges:
+            self.assertEqual((end - start) % 4, 1)
+        covered = set()
+        for index, (start, end) in enumerate(ranges):
+            covered.update(range(start, end))
+            if index:
+                self.assertEqual(start, ranges[index - 1][1] - 20)
+        self.assertEqual(covered, set(range(200)))
+
+    def test_svor_chunk_ranges_reject_invalid(self):
+        from vbr.models.svor import svor_chunk_ranges
+
+        with self.assertRaises(ValueError):
+            list(svor_chunk_ranges(100, 50, 50))
+
+    def test_svor_chunk_ranges_tail_stays_aligned_without_looping(self):
+        from vbr.models.svor import svor_chunk_ranges
+
+        # total=191 stepped backwards forever in the previous implementation
+        for total in (191, 1801):  # 1801 = real run padded up from 1799
+            ranges = list(svor_chunk_ranges(total, 77, 20))
+            covered = set()
+            for start, end in ranges:
+                self.assertEqual((end - start) % 4, 1)
+                covered.update(range(start, end))
+            self.assertEqual(covered, set(range(total)))
+        # the padded tail keeps at least `overlap` frames shared with the
+        # previous chunk so the cross-fade still has material to blend
+        ranges = list(svor_chunk_ranges(1801, 77, 20))
+        self.assertGreaterEqual(ranges[-2][1] - ranges[-1][0], 20)
+
+    def test_blend_stitch_crossfades_overlap(self):
+        import cv2 as cv2_module
+
+        from vbr.models.svor import blend_stitch
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write_chunk(name, start_value):
+                path = root / name
+                writer = cv2_module.VideoWriter(
+                    str(path), cv2_module.VideoWriter_fourcc(*"mp4v"), 5, (16, 16)
+                )
+                for _ in range(10):
+                    writer.write(np.full((16, 16, 3), start_value, dtype=np.uint8))
+                writer.release()
+                return path
+
+            first = write_chunk("first.mp4", 20)   # globals 0..9
+            second = write_chunk("second.mp4", 240)  # globals 6..15, overlap 6..9
+            stitched_path = root / "stitched.mp4"
+            total = blend_stitch(
+                [(0, 10, first), (6, 16, second)], stitched_path, 5.0, fade_frames=4
+            )
+            self.assertEqual(total, 16)
+            capture = cv2_module.VideoCapture(str(stitched_path))
+            values = []
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                values.append(int(frame[0, 0, 0]))
+            capture.release()
+            # Pure first-chunk frames stay dark, pure later-chunk stay bright,
+            # and the fade zone rises monotonically between them.
+            self.assertLess(values[0], 60)
+            self.assertGreater(values[-1], 200)
+            fade_zone = values[6:10]
+            self.assertTrue(
+                all(
+                    later >= earlier
+                    for earlier, later in zip(fade_zone, fade_zone[1:])
+                ),
+                f"fade zone not monotonic: {fade_zone}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ video/
 external/
 source/
 offline_bundle/
+svor权重/
 
 # Logs and temporaries
 *.log

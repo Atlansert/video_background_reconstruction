@@ -154,7 +154,7 @@ geometry:
   tsdf_trunc: 0.15
   depth_trunc_quantile: 0.995
 video_completion:
-  backend: propainter
+  backend: propainter          # propainter | svor（试验后端）
   environment: vbr-seg
   cuda_visible_devices: '7'
   repo_dir: external/ProPainter
@@ -162,6 +162,25 @@ video_completion:
   width: 960
   height: 536
   fp16: true
+  svor:
+    repo_dir: external/svor
+    environment: svor
+    cuda_visible_devices: '7'
+    model_name: models/Wan2.1-VACE-1.3B
+    lora_paths:
+      - models/remove_model_stage1.safetensors
+      - models/remove_model_stage2.safetensors
+    sample_size: "540,960"     # 面积预算；输出按 16 倍数上取整
+    chunk_frames: 77           # Wan VAE 要求帧长 4k+1
+    overlap: 20
+    num_inference_steps: 20
+    gpu_memory_mode: model_full_load
+    guidance_scale: 6.0
+    seed: 43
+    dilation: 0
+    weight_dtype: bfloat16
+    crf: 18
+    preset: medium
   # Keep inpaint masks close to the segmentation boundary. ProPainter applies
   # mask_dilation itself; long temporal unions or hull fills over-mask rooms.
   mask_dilation: 8

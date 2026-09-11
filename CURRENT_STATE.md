@@ -1,8 +1,18 @@
-# 当前状态与常用命令（2026-09-10）
+# 当前状态与常用命令（2026-09-11）
 
 ## 当前状态
 
 项目处于**纯背景模式**定稿状态：前景 = 全部家具（含冰箱、厨房柜体、水槽等固定家具）与移动物；保留 = 建筑结构（墙、地板、天花板、门窗、楼梯）。
+
+### SVOR 试验后端（`svor-trial` 分支，未合入 main）
+
+`video_completion.backend` 新增可选值 `svor`（Wan2.1-VACE-1.3B + 两阶段 remove LoRA，Apache-2.0，比 ProPainter 非商用许可更友好）：
+
+- 代码：`vbr/models/svor.py`（`SVORAdapter`：帧/掩膜 → 4k+1 对齐分块（77 帧 + 20 帧重叠）→ 逐块 `conda run -n svor` 调 `predict_SVOR.py` → 重叠区线性交叉淡化 → h264+aac 封装）；`cli.py` 按 backend 分发，默认仍 `propainter`
+- 资产：`external/svor/`（上游 tarball，gitignore）+ `external/svor/models/`（两 LoRA + Wan2.1-VACE-1.3B 原始格式基座，17.7GB，hf-mirror 下载）；独立环境 `svor`（python3.10 + torch2.7.0 + diffusers 0.31）；`svor权重/` 为用户下载的原始 LoRA（已 gitignore）
+- **全片对比（同掩膜、同指标，`svor_full/full_comparison.json`）**：整体透传率 SVOR **0.074** vs ProPainter 0.126；难点窗口 764–815 为 0.225 vs 0.311；glitch 双方均为 0。抽查帧 300/1500 SVOR 显著更干净（ProPainter 大片糊影），帧 1103 等处 SVOR 偶发扩散幻觉（深色幻影/边缘幽灵）
+- 切换方式：`configs/vggt_slam.yaml` → `video_completion.backend: svor` 后按需重跑；产物写入 `svor_full/` 的试跑由 `SVORAdapter.run(video/001.mp4, frames_all, masks_inpaint, …)` 直调，未覆盖 ProPainter 成品
+- 已知开销：每块单独 `conda run` 重新加载模型（约 2–3 分钟/块，全片 32 块约 2.5 小时）；尚未接时序平滑/残差反哺等后处理
 
 ### 最终产物（`outputs/001_sam31_slam/`）
 

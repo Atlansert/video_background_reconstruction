@@ -21,6 +21,7 @@ from .interactive import write_html
 from .models.segmentation import SegmentationAdapter
 from .models.slam import SLAMAdapter
 from .models.inpainting import ProPainterAdapter, _resolve_ffmpeg
+from .models.svor import SVORAdapter
 from .prompts import resolve_prompts
 from .video import (
     copy_through_evidence,
@@ -690,15 +691,25 @@ def run(cfg, stop_after="all", force=False, refine_onsets=False, refine_misses=F
         }
         status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
         try:
-            if completion_cfg.get("backend", "propainter") != "propainter":
-                raise RuntimeError("ProPainter disabled by configuration")
-            video_report = ProPainterAdapter(completion_cfg, PROJECT_ROOT).run(
-                input_video,
-                all_frames,
-                inpaint_masks,
-                output_dir / "background_video.mp4",
-                info["fps"],
-            )
+            backend = completion_cfg.get("backend", "propainter")
+            if backend == "propainter":
+                video_report = ProPainterAdapter(completion_cfg, PROJECT_ROOT).run(
+                    input_video,
+                    all_frames,
+                    inpaint_masks,
+                    output_dir / "background_video.mp4",
+                    info["fps"],
+                )
+            elif backend == "svor":
+                video_report = SVORAdapter(completion_cfg, PROJECT_ROOT).run(
+                    input_video,
+                    all_frames,
+                    inpaint_masks,
+                    output_dir / "background_video.mp4",
+                    info["fps"],
+                )
+            else:
+                raise RuntimeError(f"Unsupported video completion backend {backend!r}")
         except Exception as error:
             if not completion_cfg.get("allow_temporal_fallback", True):
                 raise
@@ -712,7 +723,7 @@ def run(cfg, stop_after="all", force=False, refine_onsets=False, refine_misses=F
                     "temporal_offsets", [15, -15, 30, -30, 60, -60]
                 ),
             )
-            video_report["propainter_error"] = str(error)
+            video_report[f"{backend}_error"] = str(error)
         status["stages"]["video"] = {"state": "complete", **video_report}
         status["state"] = "complete"
         status["elapsed_seconds"] = time.time() - started

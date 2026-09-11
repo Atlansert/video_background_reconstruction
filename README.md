@@ -1,6 +1,6 @@
 # Video Background Reconstruction
 
-从单目室内视频恢复接近空房间的背景。当前生产路径会移除可移动家具和杂物，保留墙、地板、天花板、门窗、固定厨房柜体/水槽、冰箱和楼梯。
+从单目室内视频恢复接近空房间的背景。当前生产路径按"纯背景"语义移除全部家具——包括冰箱、厨房柜体/橱柜、水槽等固定家具——只保留建筑结构：墙、地板、天花板、门窗和楼梯。
 
 ## Pipeline
 
@@ -54,7 +54,7 @@ CUDA_VISIBLE_DEVICES=7 python -m vbr.cli run \
 CUDA_VISIBLE_DEVICES=7 python -m vbr.cli run --config configs/default.yaml
 ```
 
-需要无条件重做分割时添加 `--force`。默认输入为 `video/001.mp4`，输出为 `outputs/001_sam31/`。
+需要无条件重做分割时添加 `--force`。默认输入为 `video/001.mp4`。**生产配置为 `configs/vggt_slam.yaml`**（vggt_slam 后端，输出到 `outputs/001_sam31_slam/`）；`configs/default.yaml`（vggt_direct 后端）输出到 `outputs/001_sam31/`（该目录删除后会在运行时自动重建）。当前状态与常用命令见 `CURRENT_STATE.md`。
 
 ## Outputs
 

@@ -4,23 +4,23 @@
 
 项目处于**纯背景模式**定稿状态：前景 = 全部家具（含冰箱、厨房柜体、水槽等固定家具）与移动物；保留 = 建筑结构（墙、地板、天花板、门窗、楼梯）。
 
-### SVOR 试验后端（`svor-trial` 分支，未合入 main）
+### SVOR 试验后端（`svor-trial` 分支，当前 `backend: svor`）
 
-`video_completion.backend` 新增可选值 `svor`（Wan2.1-VACE-1.3B + 两阶段 remove LoRA，Apache-2.0，比 ProPainter 非商用许可更友好）：
+`video_completion.backend` 已切换为 `svor`（Wan2.1-VACE-1.3B + 两阶段 remove LoRA，Apache-2.0，比 ProPainter 非商用许可更友好）；ProPainter 成品备份在 `snapshots/videos/background_video_presvor.mp4`（md5 与切换前 deliverable 一致）：
 
 - 代码：`vbr/models/svor.py`（`SVORAdapter`：帧/掩膜 → 4k+1 对齐分块（77 帧 + 20 帧重叠）→ 逐块 `conda run -n svor` 调 `predict_SVOR.py` → 重叠区线性交叉淡化 → **掩膜外透传合成**（`composite_source: true`，修复 SVOR 全帧重生成导致的墙位漂移/未遮挡物体闪现）→ 可选 RAFT 时序平滑（复用 `video_completion.temporal_smooth`，抑制填充区闪烁）→ h264+aac 封装）；`cli.py` 按 backend 分发，默认仍 `propainter`
 - 资产：`external/svor/`（上游 tarball，gitignore）+ `external/svor/models/`（两 LoRA + Wan2.1-VACE-1.3B 原始格式基座，17.7GB，hf-mirror 下载）；独立环境 `svor`（python3.10 + torch2.7.0 + diffusers 0.31）；`svor权重/` 为用户下载的原始 LoRA（已 gitignore）
-- **全片对比（同掩膜、同指标，`svor_full/full_comparison.json`）**：整体透传率 SVOR **0.074** vs ProPainter 0.126；难点窗口 764–815 为 0.225 vs 0.311；glitch 双方均为 0。抽查帧 300/1500 SVOR 显著更干净（ProPainter 大片糊影），帧 1103 等处 SVOR 偶发扩散幻觉（深色幻影/边缘幽灵）
-- **时域稳定性修复（2026-09-12）**：初版 SVOR 输出全帧重生成导致墙位漂移（掩膜外 vs 源 11.9，ProPainter 仅 3.8）与未遮挡物体闪现；`svor_full/background_video_v2.mp4`（透传合成+时序平滑）掩膜外保真回到 2.5–4.3，填充区深处闪烁 4.37→4.25（ProPainter 4.00）。帧 260 一类"物体闪现"实为**掩膜漏检**（置物架仅 28.7% 被盖住）：v1 重生成时顺势抹掉但不稳定，合成后如实透传——根治需补 box 种子或加大 `dilation`（重跑扩散）
-- 切换方式：`configs/vggt_slam.yaml` → `video_completion.backend: svor` 后按需重跑；产物写入 `svor_full/` 的试跑由 `SVORAdapter.run(video/001.mp4, frames_all, masks_inpaint, …)` 直调，未覆盖 ProPainter 成品
+- **正式流水线切换运行（2026-09-12）**：`backend: svor` 全链重跑（分割指纹含 cli.py 触发重分割，掩膜逐像素一致），产物与 `svor_full/background_video_v2.mp4` 逐像素一致（生成确定性强）。同口径对比 ProPainter 快照：整体透传率 **0.071** vs 0.126，掩膜外保真 4.30 vs 3.84，填充深处闪烁 4.26/10.09 vs 4.00/7.79，glitch 双方 0。已重建 GLB（27,490 点）
+- **已知暴露**：透传合成会如实呈现掩膜欠覆盖区域（帧 300 沙发脚碎片、帧 1103 衣物边缘锚定的深色幻觉）——根治靠补 box 种子或调大 `mask_expand_px`/`svor.dilation`（重跑视频段约 2.5–3 小时，分割缓存不受影响）
+- 切换方式：`configs/vggt_slam.yaml` → `video_completion.backend`（当前 svor）；`svor_full/` 为试验产物留档
 - 已知开销：每块单独 `conda run` 重新加载模型（约 2–3 分钟/块，全片 32 块约 2.5 小时）；尚未接时序平滑/残差反哺等后处理
 
 ### 最终产物（`outputs/001_sam31_slam/`）
 
 | 产物 | 说明 |
 | --- | --- |
-| `background_video.mp4` | 最终背景视频（1799 帧，960×540@29.97，h264+aac）。链路：V1.c 漏检精修（文本/box/证据种子）→ ProPainter n=40 → 光流对齐 3 帧中值 → 两遍残差反哺 ×3 |
-| `background_scene.glb` / `background_mesh.ply` / `interactive.html` | 由纯背景视频重估深度重建：29,120 点、`plan_ransac` 8 面真墙、TSDF 6,997 顶点 |
+| `background_video.mp4` | 最终背景视频（1799 帧，960×540@29.97，h264+aac）。链路（2026-09-12 起）：SVOR 32 块（77 帧+20 重叠，20 步）→ 交叉淡化 → 掩膜外透传合成 → RAFT 光流中值；ProPainter 版链路成品备份在 `snapshots/videos/background_video_presvor.mp4` |
+| `background_scene.glb` / `background_mesh.ply` / `interactive.html` | 由纯背景视频重估深度重建：27,490 点（SVOR 版，2026-09-12） |
 | `mask_overlay.mp4` / `mask_overlay_inpaint.mp4` | 掩膜叠加预览 |
 | `masks/` `masks_inpaint/` `masks_keyframes_sam31(_onset)/` | 分割掩膜、修复掩膜、种子 |
 | `slam/` `slam_bg/` | VGGT-SLAM 与背景视频重估深度两套重建源 |

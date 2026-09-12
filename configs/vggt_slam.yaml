@@ -154,7 +154,7 @@ geometry:
   tsdf_trunc: 0.15
   depth_trunc_quantile: 0.995
 video_completion:
-  backend: propainter          # propainter | svor（试验后端）
+  backend: svor                # propainter | svor（试验后端）
   environment: vbr-seg
   cuda_visible_devices: '7'
   repo_dir: external/ProPainter

@@ -175,14 +175,15 @@ class SVORAdapter:
         if process.wait() != 0:
             raise RuntimeError(f"composite encode failed, see {output_path}")
 
-    def _flow_ema(self, input_video, masks, output_path, fps, total, alpha_keep):
-        """Causal flow-propagated stabilizer inside the fills.
+    def _flow_ema(self, input_video, masks, output_path, fps, total, alpha_keep, outside_alpha=0.0):
+        """Causal flow-propagated stabilizer.
 
-        Each frame's fill is blended with the previous stabilized frame
-        warped along Farneback flow, so generated structures track camera
-        motion instead of being re-imagined every frame (the main source of
-        visible jumps between adjacent frames). Pixels outside the fills are
-        untouched.
+        Each frame is blended with the previous stabilized frame warped along
+        Farneback flow. `alpha_keep` applies inside the inpaint fills so
+        generated structures track camera motion instead of being re-imagined
+        every frame (the main source of visible jumps); `outside_alpha`
+        (used when there is no composite pass) lightly stabilizes the
+        regenerated walls/floors as well, damping their pattern crawl.
         """
         frames = _read_video_frames(input_video)
         height, width = frames[0].shape[:2]
@@ -222,7 +223,7 @@ class SVORAdapter:
             if mask.shape[:2] != (height, width):
                 mask = cv2.resize(mask, (width, height))
             fill = cv2.dilate((mask > 0).astype(np.uint8), kernel) > 0
-            alpha = np.zeros((height, width), np.float32)
+            alpha = np.full((height, width), float(outside_alpha), np.float32)
             alpha[fill] = alpha_keep
             alpha = cv2.GaussianBlur(alpha, (7, 7), 2.5)[:, :, None]
             stabilized = cur.astype(np.float32) * (1.0 - alpha) + warped * alpha
@@ -387,11 +388,18 @@ class SVORAdapter:
         processed = raw_output
         # Stabilize the RAW generation first: EMA over the composited video
         # would drag real object-edge pixels (from outside the previous
-        # fill) into the current fill, re-creating the edge ring.
+        # fill) into the current fill, re-creating the edge ring. With the
+        # composite disabled, walls/floors are lightly stabilized too
+        # (`wall_ema_alpha`), damping the generated pattern crawl.
         ema_alpha = float(self.cfg.get("fill_ema_alpha", 0.65))
-        if ema_alpha > 0:
+        outside_alpha = 0.0
+        if not self.cfg.get("composite_source", True):
+            outside_alpha = float(self.cfg.get("wall_ema_alpha", 0.0))
+        if ema_alpha > 0 or outside_alpha > 0:
             stabilized = work_root / "stabilized.mp4"
-            self._flow_ema(processed, masks, stabilized, fps_value, total, ema_alpha)
+            self._flow_ema(
+                processed, masks, stabilized, fps_value, total, ema_alpha, outside_alpha
+            )
             processed = stabilized
         if self.cfg.get("composite_source", True):
             composited = work_root / "composited.mp4"

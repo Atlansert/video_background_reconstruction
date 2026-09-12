@@ -186,10 +186,14 @@ video_completion:
     crf: 18
     preset: medium
     # 生成后处理：掩膜外透传合成（修复墙位漂移/物体闪现）
-    composite_source: true
+    # 注意：透传会把物体投影（阴影）也如实贴回背景。若以生成的自然去影为
+    # 准（v1 观感），置 false 并配合 wall_ema_alpha 稳定墙面
+    composite_source: false
     # 填充区光流 EMA 稳定器（0 关闭）：上一帧结果沿光流 warp 后按权重融入，
     # 让生成结构跟随相机运动而非逐帧重画——消除相邻帧间的填充突变
     fill_ema_alpha: 0.65
+    # 无透传时对生成墙面/地面的轻度稳定权重（抑制墙纹逐帧爬行；拖影明显则调低）
+    wall_ema_alpha: 0.3
     # 时序平滑关闭：维持原始生成的时序特性（RAFT 光流中值对扩散填充收益
     # 甚微且引入边界扰动；如填充闪烁明显可改回 enabled: true）
     temporal_smooth:

@@ -219,6 +219,8 @@ class SVORAdapter:
             mask = masks[t]
             if mask.ndim == 3:
                 mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+            if mask.shape[:2] != (height, width):
+                mask = cv2.resize(mask, (width, height))
             fill = cv2.dilate((mask > 0).astype(np.uint8), kernel) > 0
             alpha = np.zeros((height, width), np.float32)
             alpha[fill] = alpha_keep
@@ -383,15 +385,18 @@ class SVORAdapter:
             raise RuntimeError(f"Stitched {stitched} frames, expected {len(frames)}")
 
         processed = raw_output
-        if self.cfg.get("composite_source", True):
-            composited = work_root / "composited.mp4"
-            self._composite_source(raw_output, frames, masks, composited, fps_value, total)
-            processed = composited
+        # Stabilize the RAW generation first: EMA over the composited video
+        # would drag real object-edge pixels (from outside the previous
+        # fill) into the current fill, re-creating the edge ring.
         ema_alpha = float(self.cfg.get("fill_ema_alpha", 0.65))
         if ema_alpha > 0:
             stabilized = work_root / "stabilized.mp4"
             self._flow_ema(processed, masks, stabilized, fps_value, total, ema_alpha)
             processed = stabilized
+        if self.cfg.get("composite_source", True):
+            composited = work_root / "composited.mp4"
+            self._composite_source(processed, frames, masks, composited, fps_value, total)
+            processed = composited
         if (self.cfg.get("temporal_smooth") or {}).get("enabled", False):
             smoothed = work_root / "smoothed.mp4"
             smooth_masks = masks_dir

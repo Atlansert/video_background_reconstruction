@@ -43,7 +43,11 @@ segmentation:
     min_keep_fraction: 0.5
     # Box seeds: null -> derive per-subwindow boxes from the existing mask
     # blobs (expanded); a list overrides with manual {start, end, box, prompt?}.
-    box_seeds: null
+    box_seeds:
+      - start: 1550
+        end: 1798
+        box: [0.13, 0.0, 0.59, 0.5]
+        prompt: kitchen wall cabinets
     box_subwindow_frames: 25
     box_expansion: 0.4
     max_coverage_increase: 0.15

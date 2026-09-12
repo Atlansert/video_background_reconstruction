@@ -181,6 +181,9 @@ video_completion:
     weight_dtype: bfloat16
     crf: 18
     preset: medium
+    # 生成后处理：掩膜外透传合成（修复墙位漂移/物体闪现）；时序平滑复用
+    # 上方 video_completion.temporal_smooth 开关（RAFT 光流中值，抑制填充区闪烁）
+    composite_source: true
   # Keep inpaint masks close to the segmentation boundary. ProPainter applies
   # mask_dilation itself; long temporal unions or hull fills over-mask rooms.
   mask_dilation: 8

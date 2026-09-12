@@ -1229,5 +1229,33 @@ class SVORTrialTests(unittest.TestCase):
             )
 
 
+    def test_composite_source_restores_unmasked_pixels(self):
+        import cv2 as cv2_module
+
+        from vbr.models.svor import SVORAdapter, _read_video_frames, _write_video
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frames = [np.full((32, 32, 3), 30, dtype=np.uint8) for _ in range(10)]
+            masks = []
+            for _ in range(10):
+                mask = np.zeros((32, 32), dtype=np.uint8)
+                mask[8:24, 8:24] = 255
+                masks.append(cv2_module.cvtColor(mask, cv2_module.COLOR_GRAY2BGR))
+            generated_path = root / "gen.mp4"
+            _write_video(
+                [np.full((32, 32, 3), 200, dtype=np.uint8) for _ in range(10)],
+                generated_path, 5.0, (32, 32),
+            )
+            adapter = SVORAdapter({"ffmpeg_bin": "/usr/bin/ffmpeg"}, root)
+            output = root / "composited.mp4"
+            adapter._composite_source(generated_path, frames, masks, output, 5.0, 10)
+            frames_out = _read_video_frames(output)
+            self.assertEqual(len(frames_out), 10)
+            # unmasked corner stays source, masked center takes the fill
+            self.assertLess(int(frames_out[0][2, 2, 0]), 45)
+            self.assertGreater(int(frames_out[0][16, 16, 0]), 185)
+
+
 if __name__ == "__main__":
     unittest.main()

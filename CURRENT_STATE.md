@@ -10,8 +10,9 @@
 
 - 代码：`vbr/models/svor.py`（`SVORAdapter`：帧/掩膜 → 4k+1 对齐分块（77 帧 + 20 帧重叠）→ 逐块 `conda run -n svor` 调 `predict_SVOR.py` → 重叠区线性交叉淡化 → **掩膜外透传合成**（`composite_source: true`，修复 SVOR 全帧重生成导致的墙位漂移/未遮挡物体闪现）→ 可选 RAFT 时序平滑（复用 `video_completion.temporal_smooth`，抑制填充区闪烁）→ h264+aac 封装）；`cli.py` 按 backend 分发，默认仍 `propainter`
 - 资产：`external/svor/`（上游 tarball，gitignore）+ `external/svor/models/`（两 LoRA + Wan2.1-VACE-1.3B 原始格式基座，17.7GB，hf-mirror 下载）；独立环境 `svor`（python3.10 + torch2.7.0 + diffusers 0.31）；`svor权重/` 为用户下载的原始 LoRA（已 gitignore）
-- **正式流水线切换运行（2026-09-12）**：`backend: svor` 全链重跑（分割指纹含 cli.py 触发重分割，掩膜逐像素一致），产物与 `svor_full/background_video_v2.mp4` 逐像素一致（生成确定性强）。同口径对比 ProPainter 快照：整体透传率 **0.071** vs 0.126，掩膜外保真 4.30 vs 3.84，填充深处闪烁 4.26/10.09 vs 4.00/7.79，glitch 双方 0。已重建 GLB（27,490 点）
-- **已知暴露**：透传合成会如实呈现掩膜欠覆盖区域（帧 300 沙发脚碎片、帧 1103 衣物边缘锚定的深色幻觉）——根治靠补 box 种子或调大 `mask_expand_px`/`svor.dilation`（重跑视频段约 2.5–3 小时，分割缓存不受影响）
+- **正式流水线切换运行（2026-09-12）**：`backend: svor` 全链重跑（分割指纹含 cli.py 触发重分割，掩膜逐像素一致），产物与 `svor_full/background_video_v2.mp4` 逐像素一致（生成确定性强）。同口径对比 ProPainter 快照：整体透传率 **0.071** vs 0.126，glitch 双方 0
+- **边缘框与时序修复（2026-09-12 第二轮）**：`svor.mask_dilation: 8`（生成+合成共用膨胀掩膜，吞掉欠覆盖前景边缘，消除透传暴露的边缘框/墙面灰斑）+ svor 块内 `temporal_smooth.enabled: false`（恢复原始生成时序特性）。当前 deliverable 指标：透传率 **0.070**、残留 61.2、闪烁比 **1.0002**、glitch 0；掩膜外保真 5.16（v1 原始 12.12）；GLB 31,478 点。`snapshots/videos/background_video_svorsmooth.mp4` 为上一版（合成+平滑）留档
+- **剩余已知问题**：大面积掩膜漏检（帧 ~1103 衣物区）膨胀救不了，幻觉填充+毛边仍在——需 `segmentation.miss_refinement.box_seeds` 补框后重跑 `tools.refine_misses` + 视频段；填充板块感（帧 300 白色填充块）为生成内容固有
 - 切换方式：`configs/vggt_slam.yaml` → `video_completion.backend`（当前 svor）；`svor_full/` 为试验产物留档
 - 已知开销：每块单独 `conda run` 重新加载模型（约 2–3 分钟/块，全片 32 块约 2.5 小时）；尚未接时序平滑/残差反哺等后处理
 

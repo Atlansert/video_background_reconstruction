@@ -175,6 +175,61 @@ class SVORAdapter:
         if process.wait() != 0:
             raise RuntimeError(f"composite encode failed, see {output_path}")
 
+    def _flow_ema(self, input_video, masks, output_path, fps, total, alpha_keep):
+        """Causal flow-propagated stabilizer inside the fills.
+
+        Each frame's fill is blended with the previous stabilized frame
+        warped along Farneback flow, so generated structures track camera
+        motion instead of being re-imagined every frame (the main source of
+        visible jumps between adjacent frames). Pixels outside the fills are
+        untouched.
+        """
+        frames = _read_video_frames(input_video)
+        height, width = frames[0].shape[:2]
+        process = subprocess.Popen(
+            [
+                _resolve_ffmpeg(self.base_cfg.get("ffmpeg_bin")),
+                "-y", "-loglevel", "error",
+                "-f", "rawvideo", "-pix_fmt", "bgr24",
+                "-s", f"{width}x{height}", "-r", str(fps),
+                "-i", "-",
+                "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", "-an",
+                str(output_path),
+            ],
+            stdin=subprocess.PIPE,
+        )
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        prev_gray = cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY)
+        stabilized = frames[0].astype(np.float32)
+        process.stdin.write(frames[0].tobytes())
+        grid_x, grid_y = np.meshgrid(np.arange(width), np.arange(height))
+        for t in range(1, total):
+            cur = frames[t]
+            cur_gray = cv2.cvtColor(cur, cv2.COLOR_BGR2GRAY)
+            flow = cv2.calcOpticalFlowFarneback(
+                cur_gray, prev_gray, None, 0.5, 3, 21, 3, 5, 1.2, 0
+            )
+            warped = cv2.remap(
+                stabilized,
+                (grid_x + flow[:, :, 0]).astype(np.float32),
+                (grid_y + flow[:, :, 1]).astype(np.float32),
+                cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_REPLICATE,
+            )
+            mask = masks[t]
+            if mask.ndim == 3:
+                mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+            fill = cv2.dilate((mask > 0).astype(np.uint8), kernel) > 0
+            alpha = np.zeros((height, width), np.float32)
+            alpha[fill] = alpha_keep
+            alpha = cv2.GaussianBlur(alpha, (7, 7), 2.5)[:, :, None]
+            stabilized = cur.astype(np.float32) * (1.0 - alpha) + warped * alpha
+            process.stdin.write(np.clip(stabilized, 0, 255).astype(np.uint8).tobytes())
+            prev_gray = cur_gray
+        process.stdin.close()
+        if process.wait() != 0:
+            raise RuntimeError(f"flow EMA encode failed, see {output_path}")
+
     def _temporal_smooth(self, input_video, masks_dir, output_path, fps):
         """Flow-aligned 3-frame median inside the masks (RAFT, vbr-seg env)."""
         repo = (self.project_root / self.base_cfg.get("repo_dir", "external/ProPainter")).resolve()
@@ -332,6 +387,11 @@ class SVORAdapter:
             composited = work_root / "composited.mp4"
             self._composite_source(raw_output, frames, masks, composited, fps_value, total)
             processed = composited
+        ema_alpha = float(self.cfg.get("fill_ema_alpha", 0.65))
+        if ema_alpha > 0:
+            stabilized = work_root / "stabilized.mp4"
+            self._flow_ema(processed, masks, stabilized, fps_value, total, ema_alpha)
+            processed = stabilized
         if (self.cfg.get("temporal_smooth") or {}).get("enabled", False):
             smoothed = work_root / "smoothed.mp4"
             smooth_masks = masks_dir

@@ -1245,6 +1245,44 @@ class SVORTrialTests(unittest.TestCase):
         untouched = dilate_masks([mask], 0)[0]
         self.assertTrue(np.array_equal(untouched, mask))
 
+    def test_flow_ema_dampens_fill_jumps(self):
+        import cv2 as cv2_module
+
+        from vbr.models.svor import SVORAdapter, _read_video_frames, _write_video
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def jumping_frames(shift):
+                frames = []
+                for index in range(10):
+                    frame = np.full((48, 48, 3), 40, dtype=np.uint8)
+                    x = 8 if (index + shift) % 2 == 0 else 24
+                    frame[16:32, x:x + 12] = 220
+                    frames.append(frame)
+                return frames
+
+            raw_path = root / "raw.mp4"
+            _write_video(jumping_frames(0), raw_path, 5.0, (48, 48))
+            masks = [
+                cv2_module.cvtColor(np.full((48, 48), 255, dtype=np.uint8), cv2_module.COLOR_GRAY2BGR)
+                for _ in range(10)
+            ]
+            adapter = SVORAdapter({"ffmpeg_bin": "/usr/bin/ffmpeg"}, root)
+            ema_path = root / "ema.mp4"
+            adapter._flow_ema(raw_path, masks, ema_path, 5.0, 10, 0.65)
+            raw_diffs = [
+                float(np.mean(np.abs(a.astype(np.int16) - b.astype(np.int16))))
+                for a, b in zip(_read_video_frames(raw_path), _read_video_frames(raw_path)[1:])
+            ]
+            ema_frames = _read_video_frames(ema_path)
+            self.assertEqual(len(ema_frames), 10)
+            ema_diffs = [
+                float(np.mean(np.abs(a.astype(np.int16) - b.astype(np.int16))))
+                for a, b in zip(ema_frames, ema_frames[1:])
+            ]
+            self.assertLess(np.mean(ema_diffs), np.mean(raw_diffs))
+
     def test_composite_source_restores_unmasked_pixels(self):
         import cv2 as cv2_module
 

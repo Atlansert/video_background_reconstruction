@@ -187,6 +187,9 @@ video_completion:
     preset: medium
     # 生成后处理：掩膜外透传合成（修复墙位漂移/物体闪现）
     composite_source: true
+    # 填充区光流 EMA 稳定器（0 关闭）：上一帧结果沿光流 warp 后按权重融入，
+    # 让生成结构跟随相机运动而非逐帧重画——消除相邻帧间的填充突变
+    fill_ema_alpha: 0.65
     # 时序平滑关闭：维持原始生成的时序特性（RAFT 光流中值对扩散填充收益
     # 甚微且引入边界扰动；如填充闪烁明显可改回 enabled: true）
     temporal_smooth:

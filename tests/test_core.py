@@ -1229,6 +1229,22 @@ class SVORTrialTests(unittest.TestCase):
             )
 
 
+    def test_dilate_masks_grows_coverage(self):
+        from vbr.models.svor import dilate_masks
+
+        mask = np.zeros((64, 64, 3), dtype=np.uint8)
+        mask[28:36, 28:36] = 255  # 8x8 square
+        grown = dilate_masks([mask], 8)[0]
+        area_before = int((mask[:, :, 0] > 0).sum())
+        area_after = int((grown[:, :, 0] > 0).sum())
+        # ~8px growth in every direction minus rounded corners
+        self.assertGreater(area_after, area_before * 3)
+        self.assertLess(area_after, 64 * 64)
+        self.assertTrue(bool((grown[28:36, 28:36, 0] > 0).all()))
+        # zero dilation is a no-op
+        untouched = dilate_masks([mask], 0)[0]
+        self.assertTrue(np.array_equal(untouched, mask))
+
     def test_composite_source_restores_unmasked_pixels(self):
         import cv2 as cv2_module
 

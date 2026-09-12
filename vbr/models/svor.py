@@ -75,6 +75,16 @@ def svor_chunk_ranges(total, size, overlap):
         current += size - overlap
 
 
+def dilate_masks(masks, dilation_px):
+    """Grow inpaint masks so under-covered foreground edges fall inside the
+    fill region (ProPainter effectively inpaints ~8px beyond the mask)."""
+    if dilation_px <= 0:
+        return masks
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    iterations = max(1, dilation_px // 2)  # a 5x5 ellipse grows ~2px per pass
+    return [cv2.dilate(mask, kernel, iterations=iterations) for mask in masks]
+
+
 def blend_stitch(chunk_outputs, output_path, fps, fade_frames=12):
     """Stitch chunk mp4s with a linear cross-fade inside each overlap.
 
@@ -252,6 +262,8 @@ class SVORAdapter:
         fps_value = fps if fps else capture_fps
         frames, masks, _ = self._synthesize_inputs(frames_dir, masks_dir)
         total = len(frames)
+        dilation_px = int(self.cfg.get("mask_dilation", 0))
+        masks = dilate_masks(masks, dilation_px)
         pad = (4 - (total - 1) % 4) % 4  # pad the tail so the last chunk stays VAE-aligned
         if pad:
             frames += [frames[-1]] * pad
@@ -322,7 +334,14 @@ class SVORAdapter:
             processed = composited
         if (self.cfg.get("temporal_smooth") or {}).get("enabled", False):
             smoothed = work_root / "smoothed.mp4"
-            self._temporal_smooth(processed, masks_dir, smoothed, fps_value)
+            smooth_masks = masks_dir
+            if dilation_px > 0:
+                # keep smooth and composite on the same grown masks
+                smooth_masks = work_root / "masks_dilated"
+                smooth_masks.mkdir(parents=True, exist_ok=True)
+                for index in range(total):
+                    cv2.imwrite(str(smooth_masks / f"{index:06d}.png"), masks[index])
+            self._temporal_smooth(processed, smooth_masks, smoothed, fps_value)
             processed = smoothed
 
         output_path = Path(output_path)

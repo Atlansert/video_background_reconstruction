@@ -6,11 +6,11 @@ from pathlib import Path
 
 import yaml
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from vbr.models.videopainter import VideoPainterAdapter
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 cfg = yaml.safe_load((ROOT / "configs" / "vggt_slam.yaml").read_text())
 completion = cfg["video_completion"]
 completion["videopainter"]["cuda_visible_devices"] = "5"

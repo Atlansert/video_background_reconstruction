@@ -8,9 +8,16 @@
 
 每次修改并出片后运行 `python -m tools.publish_deliverables`（vbr 环境）：把 `background_video.mp4 / background_scene.glb / background_mesh.ply` 与关键报告复制进 `deliverables/`、写 manifest、commit 并 push 当前分支到 `origin`。首次使用需一次性配置 GitHub 凭据（PAT：`git config credential.helper store` 后 push 一次输入用户名+token；或加 SSH key 后把 remote 换成 git@github.com 形式）。
 
-### SVOR 试验后端（`svor-trial` 分支，当前 `backend: svor`）
+### VideoPainter 试验后端（`videopainter-trial` 分支，当前 `backend: videopainter`，试验结论见下）
 
-`video_completion.backend` 已切换为 `svor`（Wan2.1-VACE-1.3B + 两阶段 remove LoRA，Apache-2.0，比 ProPainter 非商用许可更友好）；ProPainter 成品备份在 `snapshots/videos/background_video_presvor.mp4`（md5 与切换前 deliverable 一致）：
+TencentARC/VideoPainter（SIGGRAPH 2025，CogVideoX-5b-I2V 双分支 + ID-resample LoRA）已完整接入为第三种 backend 并全片跑通（worktree `/data/lzx/video_background_reconstruction_vp`，独立 conda env 前缀 `.conda-vp` + 仓库自带 diffusers fork，GPU 5，与主流水线 GPU 7 错开）：
+
+- 代码：`vbr/videopainter_driver.py`（vp env 内驱动：单次加载、管线内部分窗 49 帧 + stride 29 隐空间重叠平均 + prev_clip 链接）、`vbr/models/videopainter.py`（适配器：TELEA 预填充、minterpolate 上采样回源帧率、tpad 补齐 1799 帧契约、音频封装）
+- 关键 off-paper 修复：`replace_gt` 的 GT 源用 TELEA 预填充替代官方打黑视频（黑环根因，近黑占比 0.014→0.0008）；首帧 TELEA 修补替代 FLUX.1-Fill（官方无 FLUX 路径有 bug）
+- **试验结论（2026-09-13）**：中小掩膜填充质量与墙地透传锁死优于 SVOR；大掩膜（客厅/厨台整景）明显糊于 SVOR；时序 warping error 1.68 略差于 SVOR 1.55；透传率 0.047 优于 SVOR 0.071；glitch 0；全片生成 41 分钟（vs SVOR ~2.5h）。**综合判断：暂不替代 SVOR 作为主后端**，留作小物件精修/融合候选。完整报告与对比图：`outputs/001_sam31_slam/experiments/videopainter/TRIAL_REPORT.md`（交付副本在 `deliverables/videopainter_trial/`）
+- 切换方式：`video_completion.backend: videopainter`；权重 `external/videopainter/ckpt/`（22G，`download_weights.py` hf-mirror 下载）
+
+### SVOR 试验后端（`svor-trial` 分支，当前 `backend: svor`）`video_completion.backend` 已切换为 `svor`（Wan2.1-VACE-1.3B + 两阶段 remove LoRA，Apache-2.0，比 ProPainter 非商用许可更友好）；ProPainter 成品备份在 `snapshots/videos/background_video_presvor.mp4`（md5 与切换前 deliverable 一致）：
 
 - 代码：`vbr/models/svor.py`（`SVORAdapter`：帧/掩膜 → 4k+1 对齐分块（77 帧 + 20 帧重叠）→ 逐块 `conda run -n svor` 调 `predict_SVOR.py` → 重叠区线性交叉淡化 → **掩膜外透传合成**（`composite_source: true`，修复 SVOR 全帧重生成导致的墙位漂移/未遮挡物体闪现）→ 可选 RAFT 时序平滑（复用 `video_completion.temporal_smooth`，抑制填充区闪烁）→ h264+aac 封装）；`cli.py` 按 backend 分发，默认仍 `propainter`
 - 资产：`external/svor/`（上游 tarball，gitignore）+ `external/svor/models/`（两 LoRA + Wan2.1-VACE-1.3B 原始格式基座，17.7GB，hf-mirror 下载；LoRA 原件备份在 `checkpoints/svor-lora/`）；独立环境 `svor`（python3.10 + torch2.7.0 + diffusers 0.31）

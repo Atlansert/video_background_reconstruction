@@ -131,16 +131,22 @@ class VideoPainterAdapter:
             "--dtype", str(self.cfg.get("dtype", "bfloat16")),
         ]
         log_path = work_root / "driver.log"
-        with log_path.open("w", encoding="utf-8") as log:
-            result = subprocess.run(
-                command, cwd=self.project_root, env=env,
-                stdout=log, stderr=subprocess.STDOUT, text=True,
-            )
-        if result.returncode:
-            tail = "\n".join(log_path.read_text(encoding="utf-8").splitlines()[-60:])
-            raise RuntimeError(f"videopainter driver failed ({result.returncode}); see {log_path}\n{tail}")
-        if not raw_output.exists() or raw_output.stat().st_size == 0:
-            raise RuntimeError(f"driver produced no video, see {log_path}")
+        if not (
+            self.cfg.get("resume", True)
+            and raw_output.exists()
+            and raw_output.stat().st_size > 0
+            and report_path.exists()
+        ):
+            with log_path.open("w", encoding="utf-8") as log:
+                result = subprocess.run(
+                    command, cwd=self.project_root, env=env,
+                    stdout=log, stderr=subprocess.STDOUT, text=True,
+                )
+            if result.returncode:
+                tail = "\n".join(log_path.read_text(encoding="utf-8").splitlines()[-60:])
+                raise RuntimeError(f"videopainter driver failed ({result.returncode}); see {log_path}\n{tail}")
+            if not raw_output.exists() or raw_output.stat().st_size == 0:
+                raise RuntimeError(f"driver produced no video, see {log_path}")
 
         # Rescale to the source contract: size + fps + frame count. minterpolate
         # motion-compensates the model's low-fps output back to source fps.
@@ -155,12 +161,20 @@ class VideoPainterAdapter:
         if upsample == "minterpolate":
             final += [
                 "-vf",
-                f"minterpolate=fps={fps_value}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,scale={size[0]}:{size[1]}",
+                f"minterpolate=fps={fps_value}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,"
+                f"tpad=stop_mode=clone:stop={total},scale={size[0]}:{size[1]}",
             ]
         elif upsample == "duplicate":
-            final += ["-vf", f"minterpolate=fps={fps_value}:mi_mode=dup,scale={size[0]}:{size[1]}"]
+            final += [
+                "-vf",
+                f"minterpolate=fps={fps_value}:mi_mode=dup,tpad=stop_mode=clone:stop={total},scale={size[0]}:{size[1]}",
+            ]
         else:
-            final += ["-vf", f"scale={size[0]}:{size[1]}", "-r", str(fps_value)]
+            final += [
+                "-vf",
+                f"tpad=stop_mode=clone:stop={total},scale={size[0]}:{size[1]}",
+                "-r", str(fps_value),
+            ]
         final += [
             "-c:v", "libx264",
             "-crf", str(self.cfg.get("crf", 18)),

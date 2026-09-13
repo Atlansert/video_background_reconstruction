@@ -59,7 +59,7 @@ class EffectEraseAdapter(SVORAdapter):
         )
         model_dir = repo / self.cfg.get("model_dir", "models/Wan-AI/Wan2.1-Fun-1.3B-InP")
         lora_path = repo / self.cfg.get(
-            "lora_path", "models/FudanCVL/EffectErase/EffectErase.ckpt"
+            "lora_path", "models/FudanCVL/EffectErase.ckpt"
         )
         required = [
             wrapper,
@@ -101,7 +101,7 @@ class EffectEraseAdapter(SVORAdapter):
         chunk_inputs = self._chunk_inputs(work_root, frames, masks, fps_value, ranges)
 
         env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = str(self.cfg.get("cuda_visible_devices", "5"))
+        env["CUDA_VISIBLE_DEVICES"] = str(self.cfg.get("cuda_visible_devices", "4"))
         env["PYTHONUNBUFFERED"] = "1"
         environment_name = self.cfg.get("environment", "effecterase")
         height = int(self.cfg.get("height", 544))

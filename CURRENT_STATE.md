@@ -114,3 +114,13 @@ python -m pytest tests/ -q
 - 分割缓存：`segmentation_manifest.json` 指纹 = 视频 stat + 分割配置 + 相关源码哈希；改任何一项都会触发全量重分割（预期行为）。
 - 掩膜链：`masks/`（重建用）→ `masks_inpaint/`（修复用，close 9 + 时序并集 ±2 + 扩张 1，ProPainter 内部 dilation 8）。
 - `masks_onset_refinement` / `masks_miss_refinement` 等中间目录均由流程重建，可随时删除。
+## EffectErase 试验分支（`effecterase-trial`，worktree `/data/lzx/video_background_reconstruction_ee`）
+
+与 svor-trial / videopainter-trial 并行的第三个试验后端（2026-09-13 接入）。EffectErase（FudanCVL，CVPR 2026，**CC BY-NC 4.0 非商用**）= Wan2.1-Fun-1.3B + 方法 LoRA，卖点是联合去除物体及其阴影/反射等"效果"。
+
+- 代码：`vbr/models/effecterase.py`（`EffectEraseAdapter` 继承 SVOR 适配器，复用 4k+1 分块/交叉淡化/双区流 EMA/缩回源分辨率的全套后处理，`backend: effecterase`）；`vbr/models/effecterase_infer.py` 推理包装（修复上游两处：空首帧掩膜崩溃→取首个非空帧做参考裁剪；mp4v 分块视频改为顺序读帧）
+- 资产：`external/effecterase/`（上游 tarball + `models/`：Wan2.1-Fun-1.3B-InP 基座 4 文件 + tokenizer 配置 + `EffectErase.ckpt`，共 20GB，hf-mirror 下载）；独立环境 `effecterase`（python3.10 + torch2.7.0+cu126 + diffsynth 1.1.8/diffusers 0.31，`pip install -e external/effecterase`）
+- 关键差异 vs SVOR：推理固定读视频开头 `--num_frames` 帧（必须分块喂）；模型分辨率 544×960（16 倍数，源 540 轻微拉伸后最终编码缩回）；GPU4（GPU7=svor、GPU5=videopainter）
+- **试验（frames 700-899，3 块 81 帧，50 步）**：全程 6.4 分钟（SVOR 同窗口 ~15 分钟级；全片估算 30-60 分钟 vs SVOR ~2.5h）。掩膜区物体去除正确（椅/台面物品/地垫），但大填充区幻觉明显（白色板状/浴缸状生成物、黑色锅状伪影、漂浮相框）；时序差同口径对比 svor 正式版：填充区 4.06 vs 3.49、墙地 3.63 vs 3.35——**首跑未超过调优五轮的 SVOR**。780-850 冰箱/上柜保留为掩膜缺口（SVOR 同样保留，非后端问题）
+- 可调杠杆（未调）：`num_inference_steps`（50，上游默认）、`lora_alpha`、`cfg`、seed、掩膜膨胀、EMA 权重同 SVOR 栈
+- 复跑试验：`conda run -n vbr python outputs/001_sam31_slam/experiments/effecterase_trial/run_trial.py`（worktree 内）；对比图 `compare_{780,815,850}.png`、`mask_check_780.png`、`svor_frame_780.png` 同目录

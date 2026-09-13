@@ -29,9 +29,14 @@ from PIL import Image
 
 def build_parser():
     parser = argparse.ArgumentParser(description="EffectErase object-removal inference (VBR wrapper).")
-    parser.add_argument("--fg_bg_path", type=str, required=True, help="Input (foreground) video.")
-    parser.add_argument("--mask_path", type=str, required=True, help="Mask video, white = remove.")
-    parser.add_argument("--output_path", type=str, required=True, help="Output background video.")
+    parser.add_argument("--fg_bg_path", type=str, help="Input (foreground) video.")
+    parser.add_argument("--mask_path", type=str, help="Mask video, white = remove.")
+    parser.add_argument("--output_path", type=str, help="Output background video.")
+    parser.add_argument(
+        "--manifest", type=str,
+        help="JSON list of {fg_bg_path, mask_path, output_path, num_frames} jobs; "
+        "processes them all in one process so the model loads once (batch mode).",
+    )
     parser.add_argument("--model_dir", type=str, required=True, help="Wan-AI/Wan2.1-Fun-1.3B-InP directory.")
     parser.add_argument("--lora_path", type=str, required=True, help="EffectErase.ckpt path.")
     parser.add_argument("--num_frames", type=int, default=81, help="Number of frames to process.")
@@ -170,19 +175,15 @@ def save_video(frames, output_path, fps):
     return str(output_path)
 
 
-def main():
-    args = build_parser().parse_args()
-
+def run_job(pipe, job, height, width, num_inference_steps, seed, cfg_scale, tiled):
     import torch
     from einops import rearrange
 
-    from diffsynth import ModelManager, WanRemovePipeline
-
     fg_frames, fg_tensors = read_video_frames_sequential(
-        args.fg_bg_path, args.num_frames, args.height, args.width
+        job["fg_bg_path"], job["num_frames"], height, width
     )
     mask_frames, mask_tensors = read_video_frames_sequential(
-        args.mask_path, args.num_frames, args.height, args.width
+        job["mask_path"], job["num_frames"], height, width
     )
 
     visible = first_visible_mask_frame(mask_frames)
@@ -190,6 +191,73 @@ def main():
         reference = crop_square_from_pil(mask_frames[visible], fg_frames[visible])
     else:
         reference = dummy_reference_crop(fg_frames[0])
+
+    mask_video = rearrange(torch.stack(mask_tensors), "T C H W -> C T H W").to("cuda")
+    fg_video = rearrange(torch.stack(fg_tensors), "T C H W -> C T H W").to("cuda")
+    reference = reference.to("cuda")
+
+    remove_prompt = (
+        "Remove the specified object and all related effects, then restore a clean background."
+    )
+    negative_prompt = (
+        "细节模糊不清，字幕，作品，画作，画面，静止，最差质量，低质量，JPEG压缩残留，"
+        "丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，"
+        "形态畸形的肢体，手指融合，杂乱的背景，三条腿，背景人很多，倒着走"
+    )
+
+    print(f"[INFO] Running inference on {job['fg_bg_path']}...", flush=True)
+    with torch.inference_mode(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
+        remove_video, _ = pipe(
+            video_mask=mask_video,
+            video_fg_bg=fg_video,
+            video_bg=None,
+            task="remove",
+            fg_first_img=reference,
+            prompt_remove=remove_prompt,
+            negative_prompt=negative_prompt,
+            num_inference_steps=num_inference_steps,
+            cfg_scale=cfg_scale,
+            seed=seed,
+            tiled=tiled,
+            height=height,
+            width=width,
+            num_frames=job["num_frames"],  # defaults to 81 — tail chunks are shorter
+        )
+
+    if hasattr(remove_video, "detach"):
+        remove_video = remove_video.detach().cpu().numpy()
+
+    capture = cv2.VideoCapture(str(job["fg_bg_path"]))
+    fps = capture.get(cv2.CAP_PROP_FPS) or 24.0
+    capture.release()
+    save_video(remove_video, job["output_path"], fps)
+
+
+def main():
+    import json
+
+    import torch
+
+    from diffsynth import ModelManager, WanRemovePipeline
+
+    args = build_parser().parse_args()
+    if args.manifest:
+        with open(args.manifest, encoding="utf-8") as handle:
+            jobs = json.load(handle)
+    else:
+        if not (args.fg_bg_path and args.mask_path and args.output_path):
+            raise SystemExit("either --manifest or all of --fg_bg_path/--mask_path/--output_path are required")
+        jobs = [
+            {
+                "fg_bg_path": args.fg_bg_path,
+                "mask_path": args.mask_path,
+                "output_path": args.output_path,
+                "num_frames": args.num_frames,
+            }
+        ]
+    # resume: chunk outputs from a crashed batch run are still valid
+    pending = [job for job in jobs if not (Path(job["output_path"]).exists() and Path(job["output_path"]).stat().st_size > 0)]
+    print(f"[INFO] {len(jobs) - len(pending)}/{len(jobs)} jobs already done, running {len(pending)}", flush=True)
 
     model_dir = Path(args.model_dir)
     print("[INFO] Building model...")
@@ -207,44 +275,13 @@ def main():
     pipe = WanRemovePipeline.from_model_manager(model_manager, torch_dtype=torch.bfloat16, device="cuda")
     pipe.enable_vram_management(num_persistent_param_in_dit=6 * 10**9)
 
-    mask_video = rearrange(torch.stack(mask_tensors), "T C H W -> C T H W").to("cuda")
-    fg_video = rearrange(torch.stack(fg_tensors), "T C H W -> C T H W").to("cuda")
-    reference = reference.to("cuda")
-
-    remove_prompt = (
-        "Remove the specified object and all related effects, then restore a clean background."
-    )
-    negative_prompt = (
-        "细节模糊不清，字幕，作品，画作，画面，静止，最差质量，低质量，JPEG压缩残留，"
-        "丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，"
-        "形态畸形的肢体，手指融合，杂乱的背景，三条腿，背景人很多，倒着走"
-    )
-
-    print("[INFO] Running inference...")
-    with torch.inference_mode(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
-        remove_video, _ = pipe(
-            video_mask=mask_video,
-            video_fg_bg=fg_video,
-            video_bg=None,
-            task="remove",
-            fg_first_img=reference,
-            prompt_remove=remove_prompt,
-            negative_prompt=negative_prompt,
-            num_inference_steps=args.num_inference_steps,
-            cfg_scale=args.cfg,
-            seed=args.seed,
-            tiled=args.tiled,
-            height=args.height,
-            width=args.width,
+    for job in pending:
+        run_job(
+            pipe, job,
+            height=args.height, width=args.width,
+            num_inference_steps=args.num_inference_steps, seed=args.seed,
+            cfg_scale=args.cfg, tiled=args.tiled,
         )
-
-    if hasattr(remove_video, "detach"):
-        remove_video = remove_video.detach().cpu().numpy()
-
-    capture = cv2.VideoCapture(str(args.fg_bg_path))
-    fps = capture.get(cv2.CAP_PROP_FPS) or 24.0
-    capture.release()
-    save_video(remove_video, args.output_path, fps)
     print("[INFO] All done!")
 
 

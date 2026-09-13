@@ -106,44 +106,77 @@ class EffectEraseAdapter(SVORAdapter):
         environment_name = self.cfg.get("environment", "effecterase")
         height = int(self.cfg.get("height", 544))
         width = int(self.cfg.get("width", 960))
-        chunk_outputs = []
-        for chunk_index, (start, end, chunk_input, chunk_mask, chunk_dir) in enumerate(
-            chunk_inputs
-        ):
-            produced = chunk_dir / "out.mp4"
-            command = [
+        log_path = Path(output_path).parent / "logs" / "effecterase.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def base_command():
+            return [
                 "conda", "run", "--no-capture-output", "-n", environment_name,
                 "python", str(wrapper.resolve()),
-                "--fg_bg_path", str(chunk_input.resolve()),
-                "--mask_path", str(chunk_mask.resolve()),
-                "--output_path", str(produced.resolve()),
                 "--model_dir", str(model_dir.resolve()),
                 "--lora_path", str(lora_path.resolve()),
-                "--num_frames", str(end - start),
                 "--height", str(height),
                 "--width", str(width),
                 "--num_inference_steps", str(self.cfg.get("num_inference_steps", 50)),
                 "--seed", str(self.cfg.get("seed", 2025)),
                 "--cfg", str(self.cfg.get("cfg", 1.0)),
                 "--lora_alpha", str(self.cfg.get("lora_alpha", 1.0)),
+            ] + (["--tiled"] if self.cfg.get("tiled", False) else [])
+
+        if self.cfg.get("batch_chunks", True):
+            # One process for every chunk: the ~2 min model load is paid once
+            # instead of per chunk (dominant cost on the full 27-chunk run).
+            jobs = [
+                {
+                    "fg_bg_path": str(chunk_input.resolve()),
+                    "mask_path": str(chunk_mask.resolve()),
+                    "output_path": str((chunk_dir / "out.mp4").resolve()),
+                    "num_frames": end - start,
+                }
+                for start, end, chunk_input, chunk_mask, chunk_dir in chunk_inputs
             ]
-            if self.cfg.get("tiled", False):
-                command.append("--tiled")
-            log_path = (
-                Path(output_path).parent / "logs" / f"effecterase_chunk_{chunk_index:03d}.log"
-            )
-            log_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest = work_root / "manifest.json"
+            manifest.write_text(json.dumps(jobs, indent=2), encoding="utf-8")
             with log_path.open("w", encoding="utf-8") as log:
                 result = subprocess.run(
-                    command, cwd=self.project_root, env=env, stdout=log,
+                    base_command() + ["--manifest", str(manifest.resolve())],
+                    cwd=self.project_root, env=env, stdout=log,
                     stderr=subprocess.STDOUT, text=True,
                 )
             if result.returncode:
                 tail = "\n".join(log_path.read_text(encoding="utf-8").splitlines()[-40:])
                 raise RuntimeError(
-                    f"EffectErase chunk {chunk_index} failed ({result.returncode}); "
-                    f"see {log_path}\n{tail}"
+                    f"EffectErase batch failed ({result.returncode}); see {log_path}\n{tail}"
                 )
+        else:
+            for chunk_index, (start, end, chunk_input, chunk_mask, chunk_dir) in enumerate(
+                chunk_inputs
+            ):
+                produced = chunk_dir / "out.mp4"
+                command = base_command() + [
+                    "--fg_bg_path", str(chunk_input.resolve()),
+                    "--mask_path", str(chunk_mask.resolve()),
+                    "--output_path", str(produced.resolve()),
+                    "--num_frames", str(end - start),
+                ]
+                chunk_log = (
+                    Path(output_path).parent / "logs" / f"effecterase_chunk_{chunk_index:03d}.log"
+                )
+                with chunk_log.open("w", encoding="utf-8") as log:
+                    result = subprocess.run(
+                        command, cwd=self.project_root, env=env, stdout=log,
+                        stderr=subprocess.STDOUT, text=True,
+                    )
+                if result.returncode:
+                    tail = "\n".join(chunk_log.read_text(encoding="utf-8").splitlines()[-40:])
+                    raise RuntimeError(
+                        f"EffectErase chunk {chunk_index} failed ({result.returncode}); "
+                        f"see {chunk_log}\n{tail}"
+                    )
+
+        chunk_outputs = []
+        for start, end, _, _, chunk_dir in chunk_inputs:
+            produced = chunk_dir / "out.mp4"
             if not produced.exists() or produced.stat().st_size == 0:
                 raise RuntimeError(f"EffectErase did not create {produced}")
             chunk_outputs.append((start, end, produced))

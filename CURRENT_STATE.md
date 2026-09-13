@@ -121,6 +121,8 @@ python -m pytest tests/ -q
 - 代码：`vbr/models/effecterase.py`（`EffectEraseAdapter` 继承 SVOR 适配器，复用 4k+1 分块/交叉淡化/双区流 EMA/缩回源分辨率的全套后处理，`backend: effecterase`）；`vbr/models/effecterase_infer.py` 推理包装（修复上游两处：空首帧掩膜崩溃→取首个非空帧做参考裁剪；mp4v 分块视频改为顺序读帧）
 - 资产：`external/effecterase/`（上游 tarball + `models/`：Wan2.1-Fun-1.3B-InP 基座 4 文件 + tokenizer 配置 + `EffectErase.ckpt`，共 20GB，hf-mirror 下载）；独立环境 `effecterase`（python3.10 + torch2.7.0+cu126 + diffsynth 1.1.8/diffusers 0.31，`pip install -e external/effecterase`）
 - 关键差异 vs SVOR：推理固定读视频开头 `--num_frames` 帧（必须分块喂）；模型分辨率 544×960（16 倍数，源 540 轻微拉伸后最终编码缩回）；GPU4（GPU7=svor、GPU5=videopainter）
-- **试验（frames 700-899，3 块 81 帧，50 步）**：全程 6.4 分钟（SVOR 同窗口 ~15 分钟级；全片估算 30-60 分钟 vs SVOR ~2.5h）。掩膜区物体去除正确（椅/台面物品/地垫），但大填充区幻觉明显（白色板状/浴缸状生成物、黑色锅状伪影、漂浮相框）；时序差同口径对比 svor 正式版：填充区 4.06 vs 3.49、墙地 3.63 vs 3.35——**首跑未超过调优五轮的 SVOR**。780-850 冰箱/上柜保留为掩膜缺口（SVOR 同样保留，非后端问题）
-- 可调杠杆（未调）：`num_inference_steps`（50，上游默认）、`lora_alpha`、`cfg`、seed、掩膜膨胀、EMA 权重同 SVOR 栈
-- 复跑试验：`conda run -n vbr python outputs/001_sam31_slam/experiments/effecterase_trial/run_trial.py`（worktree 内）；对比图 `compare_{780,815,850}.png`、`mask_check_780.png`、`svor_frame_780.png` 同目录
+- **参数扫描（700-899 窗口，12 变体，`sweep_summary.json`）**：发现 (1) 上游 remove 管线**忽略 cfg_scale**（负向提示编码后从未进入去噪循环，cfg2/cfg3 与 base 逐位一致）；(2) 种子对幻觉影响大（同配置填充时序差 ±0.5）；(3) 训练默认分辨率 480x832 墙地最稳但填充偏糊，544x960 填充更锐但幻觉更重。选定 **r480s30seed1**（480x832、30 步、seed 1）：窗口时序差填充 3.661/墙地 3.414（12 变体双最优，svor 参照 3.491/3.350），单块推理最快
+- **工程优化**：批量分块模式（`batch_chunks: true`，单进程跑完全部分块，~2 分钟模型加载只付一次）；断点续跑（崩溃后重跑自动跳过已完成块）；修复尾块 bug（`pipe()` 需显式传 `num_frames`，否则默认 81 导致张量形状崩溃——试验窗口每块恰为 81 帧故未暴露）
+- **全片 1799 帧结果（`experiments/effecterase_full/`，总推理 ~25 分钟 vs SVOR ~2.5h，GPU4）**：时序差全片口径 SVOR 仍占优（填充 4.43 vs 3.04、墙地 3.49 vs 3.03——SVOR 后处理经五轮调优且无上采样损失；EffectErase 有 832→960 放大噪声）。目视各有胜负：1700 末段橱柜去除**优于 SVOR**（无 ghost 衣柜，仅轻微半透明痕迹）、300 沙发段干净（中有一块白色"面板"幻觉，与 SVOR 同类）、1103 衣物段同样留半透明 ghost 衣物（与 SVOR 同类失败）。掩膜缺口（780-850 冰箱/上柜）与后端无关，两边一致
+- 结论：EffectErase 作为**高速备选后端**成立（6 倍速、Apache 之外注意 CC BY-NC 非商用），开箱时序稳定性仍落后调优后的 SVOR；若采用需接受重幻觉类伪影或继续调种子/分辨率
+- 复跑试验：`conda run -n vbr python outputs/001_sam31_slam/experiments/effecterase_trial/run_sweep.py`（变体名可选，worktree 内）；对比图在 `sweep/<变体>/compare_*.png` 与 `effecterase_full/compare_*.png`

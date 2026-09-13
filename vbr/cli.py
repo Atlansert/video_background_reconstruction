@@ -22,6 +22,7 @@ from .models.segmentation import SegmentationAdapter
 from .models.slam import SLAMAdapter
 from .models.inpainting import ProPainterAdapter, _resolve_ffmpeg
 from .models.svor import SVORAdapter
+from .models.videopainter import VideoPainterAdapter
 from .prompts import resolve_prompts
 from .video import (
     copy_through_evidence,
@@ -702,6 +703,14 @@ def run(cfg, stop_after="all", force=False, refine_onsets=False, refine_misses=F
                 )
             elif backend == "svor":
                 video_report = SVORAdapter(completion_cfg, PROJECT_ROOT).run(
+                    input_video,
+                    all_frames,
+                    inpaint_masks,
+                    output_dir / "background_video.mp4",
+                    info["fps"],
+                )
+            elif backend == "videopainter":
+                video_report = VideoPainterAdapter(completion_cfg, PROJECT_ROOT).run(
                     input_video,
                     all_frames,
                     inpaint_masks,

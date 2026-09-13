@@ -158,7 +158,7 @@ geometry:
   tsdf_trunc: 0.15
   depth_trunc_quantile: 0.995
 video_completion:
-  backend: svor                # propainter | svor（试验后端）
+  backend: videopainter         # propainter | svor（试验后端）| videopainter（试验分支）
   environment: vbr-seg
   cuda_visible_devices: '7'
   repo_dir: external/ProPainter
@@ -202,6 +202,31 @@ video_completion:
     # 甚微且引入边界扰动；如填充闪烁明显可改回 enabled: true）
     temporal_smooth:
       enabled: false
+  # VideoPainter 试验后端（TencentARC，SIGGRAPH 2025）：CogVideoX-5b-I2V +
+  # context-control branch + ID-resample LoRA；replace_gt 在隐空间锁定掩膜外
+  # 为真实像素（自带透传语义，无墙位漂移）。CogVideoX 为 8fps 720x480 模型：
+  # 按 down_sample_stride 时间降采样生成，再由 upsample 运动补偿回源帧率
+  videopainter:
+    repo_dir: external/videopainter
+    environment: /data/lzx/video_background_reconstruction_vp/.conda-vp
+    cuda_visible_devices: '4'    # 主流水线约定用 7，试验分支错开
+    model_path: external/videopainter/ckpt/CogVideoX-5b-I2V
+    branch_path: external/videopainter/ckpt/VideoPainter/VideoPainter/checkpoints/branch
+    id_adapter_path: external/videopainter/ckpt/VideoPainter/VideoPainterID/checkpoints
+    prompt: "an empty modern kitchen with white walls, a wooden floor, a window and built-in cabinets, no furniture, static camera background"
+    height: 480
+    width: 720
+    window_frames: 49
+    window_stride: 29           # 20 帧隐空间重叠平均（抑制窗口接缝突变，同 SVOR 重叠思路）
+    down_sample_stride: 3        # 29.97fps → ~10fps（CogVideoX 训练分布为 8fps）
+    num_inference_steps: 30
+    guidance_scale: 6.0
+    prev_clip_weight: 0.5
+    seed: 42
+    mask_dilate_px: 16           # 源分辨率上的掩膜膨胀（其基准用模型分辨率 32px）
+    upsample: minterpolate       # minterpolate | duplicate | none
+    crf: 18
+    preset: medium
   # Keep inpaint masks close to the segmentation boundary. ProPainter applies
   # mask_dilation itself; long temporal unions or hull fills over-mask rooms.
   mask_dilation: 8

@@ -1182,6 +1182,39 @@ class SVORTrialTests(unittest.TestCase):
         ranges = list(svor_chunk_ranges(1801, 77, 20))
         self.assertGreaterEqual(ranges[-2][1] - ranges[-1][0], 20)
 
+
+class VideoPainterTrialTests(unittest.TestCase):
+    def test_videopainter_window_pad_covers_every_frame(self):
+        from vbr.models.videopainter import window_pad_count
+
+        window, stride = 49, 49
+        # 600 = the real run's model frames (1799 frames, stride 3)
+        for model_frames in (600, 137, 50):
+            pad = window_pad_count(model_frames, window, stride)
+            covered = model_frames + pad
+            n_windows = (covered - window) // stride + 1
+            self.assertGreaterEqual((n_windows - 1) * stride + window, model_frames)
+        # short clips pad up to exactly one window
+        self.assertEqual(window_pad_count(30, window, stride), 19)
+        self.assertEqual(window_pad_count(window, window, stride), 0)
+        with self.assertRaises(ValueError):
+            window_pad_count(0, window, stride)
+
+    def test_videopainter_config_merge_prefers_nested_block(self):
+        from vbr.models.videopainter import VideoPainterAdapter
+
+        adapter = VideoPainterAdapter(
+            {
+                "ffmpeg_bin": "/usr/bin/ffmpeg",
+                "cuda_visible_devices": "7",
+                "videopainter": {"cuda_visible_devices": "4", "seed": 42},
+            },
+            "/tmp",
+        )
+        self.assertEqual(adapter.cfg["cuda_visible_devices"], "4")
+        self.assertEqual(adapter.cfg["seed"], 42)
+        self.assertEqual(adapter.base_cfg["cuda_visible_devices"], "7")
+
     def test_blend_stitch_crossfades_overlap(self):
         import cv2 as cv2_module
 

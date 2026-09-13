@@ -200,9 +200,9 @@ video_completion:
     composite_source: false
     # 填充区光流 EMA 稳定器（0 关闭）：上一帧结果沿光流 warp 后按权重融入，
     # 让生成结构跟随相机运动而非逐帧重画——消除相邻帧间的填充突变
-    fill_ema_alpha: 0.65
+    fill_ema_alpha: 0.75
     # 无透传时对生成墙面/地面的轻度稳定权重（抑制墙纹逐帧爬行；拖影明显则调低）
-    wall_ema_alpha: 0.3
+    wall_ema_alpha: 0.45
     # 跨窗噪声对齐（实验后关闭）：双窗 A/B 实测重叠区差异 9.03→10.03（变差），
     # 证明不匹配主导因素是 VACE 条件上下文不同而非初始噪声；代码保留备用
     noise_alignment: false

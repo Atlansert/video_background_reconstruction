@@ -17,3 +17,8 @@ offline_bundle/
 
 # videopainter trial isolation
 .conda-vp/
+
+# worktree 本地符号链接（指向主树共享资产，不入 git）
+/checkpoints
+/video
+/offline_bundle

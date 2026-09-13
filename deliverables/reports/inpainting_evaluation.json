@@ -1,11 +1,11 @@
 {
   "frames_sampled": 57,
   "stride": 30,
-  "residue_mean": 61.70276106449596,
-  "residue_p90": 73.35033111572265,
-  "residual_structure_mean": 42.32959051299513,
-  "flicker_ratio_mean": 0.9887414009372837,
-  "flicker_ratio_p90": 1.3917758360550916,
+  "residue_mean": 61.595152603952506,
+  "residue_p90": 73.49036712646485,
+  "residual_structure_mean": 42.225279690926534,
+  "flicker_ratio_mean": 0.9876008410438046,
+  "flicker_ratio_p90": 1.3895302865670913,
   "basis": {
     "residue_flicker_masks": "masks",
     "copy_through_masks": "masks_inpaint"
@@ -17,13 +17,13 @@
         "start": 1085,
         "end": 1130,
         "frames_sampled": 10,
-        "mean": 0.06602374130852394,
-        "max": 0.10183463058232325
+        "mean": 0.06522164436686544,
+        "max": 0.10213993444740001
       }
     ],
-    "in_window_mean": 0.06602374130852394,
-    "outside_mean": 0.05769836915226595,
-    "overall_mean": 0.057929629489939787
+    "in_window_mean": 0.06522164436686544,
+    "outside_mean": 0.05656456466592507,
+    "overall_mean": 0.0568050391020623
   },
   "glitch": {
     "frames_checked": 59,

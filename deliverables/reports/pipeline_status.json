@@ -1,0 +1,415 @@
+{
+  "state": "complete",
+  "started_at_unix": 1789199820.9577868,
+  "stages": {
+    "frames": {
+      "state": "complete",
+      "all": 1799,
+      "keyframes": 61
+    },
+    "segmentation": {
+      "state": "complete",
+      "files": 1799,
+      "expected_frames": 1799,
+      "nonempty_frames": 1799,
+      "mean_coverage": 0.3896752439626953,
+      "max_coverage": 0.5794618055555556,
+      "mean_frame_xor": 0.019058934867616967,
+      "max_frame_xor": 0.06854552469135802,
+      "keyframe_boundary_xor": 0.025209233539094652,
+      "intra_interval_xor": 0.01884661155329668,
+      "keyframe_xor_ratio": 1.33760031440161,
+      "flicker_off_fraction": 0.00019849934218210048,
+      "flicker_on_fraction": 0.00014982747308614494,
+      "filled_enclosed_hole_pixels": 233024,
+      "temporal_stabilize": {
+        "changed_frames": 1560,
+        "changed_pixels": 7269026,
+        "pinned_frames": 61,
+        "flicker_frames": 1442,
+        "jumps": 19,
+        "jump_frames": 118
+      },
+      "onset_refinement": {
+        "enabled": false,
+        "events": [],
+        "refined_seed_frames": []
+      },
+      "miss_refinement": {
+        "enabled": false,
+        "windows": []
+      }
+    },
+    "reconstruction": {
+      "state": "complete",
+      "backend": "vggt_slam_masked",
+      "selected_frames": 118,
+      "candidate_frames": 451,
+      "keyframes_after_flow": 118,
+      "keyframes_after_cap": 118,
+      "submap_count": 8,
+      "loop_closures": 1,
+      "mask_aware_matching": true,
+      "model_mode": "square",
+      "submap_scales": {
+        "0": 0.9999999999999999,
+        "17": 0.6435518266769797,
+        "34": 0.46831891101809897,
+        "51": 0.46581717111482374,
+        "68": 0.3111024097023833,
+        "85": 0.5982370479276453,
+        "102": 0.9769962747409316,
+        "121": 0.5902560736111271
+      },
+      "frame_ids": [
+        0,
+        60,
+        80,
+        96,
+        108,
+        136,
+        160,
+        176,
+        188,
+        200,
+        212,
+        224,
+        232,
+        240,
+        252,
+        268,
+        288,
+        296,
+        332,
+        348,
+        356,
+        372,
+        392,
+        404,
+        408,
+        416,
+        436,
+        452,
+        464,
+        472,
+        484,
+        496,
+        508,
+        520,
+        528,
+        544,
+        560,
+        572,
+        580,
+        588,
+        596,
+        604,
+        612,
+        620,
+        632,
+        640,
+        656,
+        668,
+        684,
+        696,
+        708,
+        724,
+        736,
+        748,
+        756,
+        776,
+        792,
+        812,
+        848,
+        868,
+        908,
+        920,
+        932,
+        944,
+        956,
+        968,
+        976,
+        984,
+        1000,
+        1012,
+        1024,
+        1032,
+        1040,
+        1052,
+        1064,
+        1088,
+        1096,
+        1104,
+        1112,
+        1120,
+        1128,
+        1140,
+        1148,
+        1156,
+        1172,
+        1188,
+        1204,
+        1212,
+        1220,
+        1228,
+        1236,
+        1244,
+        1252,
+        1264,
+        1276,
+        1304,
+        1320,
+        1348,
+        1372,
+        1380,
+        1396,
+        1412,
+        1424,
+        1432,
+        1444,
+        1460,
+        1484,
+        1500,
+        1520,
+        1536,
+        1544,
+        1552,
+        1564,
+        1576,
+        1588,
+        1604,
+        1668,
+        1768
+      ],
+      "confidence_percentile": 35.0,
+      "confidence_cutoff": 1.0,
+      "mean_mask_coverage_model_space": 0.0,
+      "foreground_points_rejected": 0,
+      "raw_background_points": 31662232,
+      "output_points": 52909,
+      "model_space": [
+        518,
+        518
+      ],
+      "pointcloud": "/data/lzx/video_background_reconstruction/outputs/001_sam31_slam/slam_bg/points_background.ply",
+      "reconstruction": "/data/lzx/video_background_reconstruction/outputs/001_sam31_slam/slam_bg/points_background.npz",
+      "trajectory": "/data/lzx/video_background_reconstruction/outputs/001_sam31_slam/slam_bg/trajectory_tum.txt",
+      "slam_elapsed_seconds": 13.416173458099365
+    },
+    "geometry": {
+      "state": "complete",
+      "opening_hints": 75,
+      "gravity_down": [
+        -0.03239059661504769,
+        0.9974662785924318,
+        -0.06333934258993898
+      ],
+      "planes": [
+        {
+          "normal": [
+            0.8003362526493262,
+            0.5524286791976293,
+            -0.23299020814874788
+          ],
+          "d": 0.2088104996487704,
+          "points": 8585,
+          "gravity_alignment": 0.5398630567250632,
+          "kind": "other"
+        },
+        {
+          "normal": [
+            -0.0759661701089316,
+            0.9478736144293042,
+            0.3094588051190457
+          ],
+          "d": -0.256331862449017,
+          "points": 6999,
+          "gravity_alignment": 0.9283316390582357,
+          "kind": "horizontal"
+        },
+        {
+          "normal": [
+            -0.032579440771231385,
+            0.956925363967692,
+            0.288500308201454
+          ],
+          "d": -0.11653756115152214,
+          "points": 5919,
+          "gravity_alignment": 0.937282629353052,
+          "kind": "horizontal"
+        },
+        {
+          "normal": [
+            0.7928027325457012,
+            0.5684431291318341,
+            -0.21985503453157068
+          ],
+          "d": 0.10999349121915744,
+          "points": 4744,
+          "gravity_alignment": 0.5552489724536903,
+          "kind": "other"
+        },
+        {
+          "normal": [
+            -0.06265277585336898,
+            0.9639531503760106,
+            0.25859031991942777
+          ],
+          "d": 0.02535535971374206,
+          "points": 4114,
+          "gravity_alignment": 0.947161181568671,
+          "kind": "horizontal"
+        },
+        {
+          "normal": [
+            -0.08758408216513473,
+            0.9558014061344445,
+            0.2806647476629538
+          ],
+          "d": -0.3066236110262978,
+          "points": 4180,
+          "gravity_alignment": 0.9384394517205054,
+          "kind": "horizontal"
+        },
+        {
+          "normal": [
+            -0.05667192882182261,
+            0.9520901670479964,
+            0.30052055885102524
+          ],
+          "d": -0.18769655977265196,
+          "points": 3540,
+          "gravity_alignment": 0.932478698763291,
+          "kind": "horizontal"
+        },
+        {
+          "normal": [
+            -0.0010049767304945662,
+            0.8822692249672129,
+            -0.4707440968249358
+          ],
+          "d": -0.003866897869546304,
+          "points": 2990,
+          "gravity_alignment": 0.9098829739615458,
+          "kind": "horizontal"
+        },
+        {
+          "normal": [
+            0.8100060535035338,
+            0.5330022418962508,
+            -0.24453793860912582
+          ],
+          "d": 0.29982517602320685,
+          "points": 2327,
+          "gravity_alignment": 0.5209040556406975,
+          "kind": "other"
+        },
+        {
+          "normal": [
+            0.8770474872707875,
+            -0.4451067332626706,
+            -0.18074208440269687
+          ],
+          "d": 0.05938709646987077,
+          "points": 1911,
+          "gravity_alignment": 0.4609389633719774,
+          "kind": "other"
+        },
+        {
+          "normal": [
+            0.7913166734771125,
+            0.5659477719295191,
+            -0.23134615130390612
+          ],
+          "d": 0.03996825727075201,
+          "points": 1627,
+          "gravity_alignment": 0.5535359119131591,
+          "kind": "other"
+        },
+        {
+          "normal": [
+            0.8146181199270742,
+            0.5226861859227147,
+            -0.2513890803715319
+          ],
+          "d": 0.3788165932526264,
+          "points": 1280,
+          "gravity_alignment": 0.5108986969111579,
+          "kind": "other"
+        }
+      ],
+      "room": {
+        "ceiling_level": -0.49778301041232514,
+        "floor_level": 1.2114977049768623,
+        "room_height": 1.7092807153891874,
+        "wall_count": 8,
+        "wall_source": "plan_ransac",
+        "wall_openings": 1,
+        "footprint": [
+          -1.8841379141740693,
+          0.014371341020560839,
+          -0.986579080944459,
+          0.8985492135629026
+        ]
+      },
+      "surface_method": "tsdf",
+      "surface_vertices": 9500,
+      "structural_vertices": 49,
+      "combined_vertices": 9549,
+      "combined_triangles": 15223,
+      "mesh_clean": {
+        "components_before": 216,
+        "components_after": 4,
+        "largest_fraction": 0.7272272897663377,
+        "boundary_loops": 65,
+        "holes_filled": 56
+      },
+      "tsdf_error": null,
+      "glb_error": null
+    },
+    "inpainting_masks": {
+      "state": "complete",
+      "frames": 1799,
+      "close_px": 9,
+      "temporal_radius": 2,
+      "dilate_px": 1,
+      "hull_min_area": 0,
+      "hull_pixels": 0,
+      "overlap": 0.12,
+      "mean_coverage_source": 0.3896752439626945,
+      "mean_coverage": 0.427528738959916,
+      "mean_extra_coverage": 0.03785349499722067,
+      "p90_coverage": 0.5653171296296295,
+      "max_coverage": 0.6164158950617284,
+      "extra_coverage_ratio": 0.09714113376123162
+    },
+    "video": {
+      "state": "complete",
+      "method": "svor",
+      "environment": "svor",
+      "chunks": 32,
+      "chunk_frames": 77,
+      "overlap": 20,
+      "sample_size": "540,960",
+      "num_inference_steps": 20,
+      "output": "/data/lzx/video_background_reconstruction/outputs/001_sam31_slam/background_video.mp4",
+      "raw_output": "/data/lzx/video_background_reconstruction/outputs/001_sam31_slam/svor/combined.mp4"
+    }
+  },
+  "elapsed_seconds": 5468.8526866436005,
+  "geometry_redepth": {
+    "input": "background_video.mp4",
+    "submap_scales": {
+      "checked": true,
+      "submaps": 8,
+      "median_scale": 0.5942,
+      "min_scale": 0.3111,
+      "max_scale": 1.0,
+      "scale_outliers": {
+        "0": 0.9999999999999999,
+        "68": 0.3111024097023833,
+        "102": 0.9769962747409316
+      }
+    }
+  }
+}

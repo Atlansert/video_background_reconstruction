@@ -1,0 +1,34 @@
+{
+  "frames_sampled": 60,
+  "stride": 30,
+  "residue_mean": 61.66163724263509,
+  "residue_p90": 75.3238006591797,
+  "residual_structure_mean": 43.517017428080244,
+  "flicker_ratio_mean": 1.0849503992914287,
+  "flicker_ratio_p90": 1.5440893277868288,
+  "basis": {
+    "residue_flicker_masks": "masks",
+    "copy_through_masks": "masks_inpaint"
+  },
+  "windowed_copy": {
+    "frames_sampled": 360,
+    "per_window": [
+      {
+        "start": 1550,
+        "end": 1798,
+        "frames_sampled": 50,
+        "mean": 0.06531846875149103,
+        "max": 0.1260670450350683
+      }
+    ],
+    "in_window_mean": 0.06531846875149103,
+    "outside_mean": 0.0721747205386224,
+    "overall_mean": 0.07122246334596526
+  },
+  "glitch": {
+    "frames_checked": 59,
+    "glitch_frames": [],
+    "glitch_count": 0,
+    "glitch_fraction": 0.0
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "published_at": "2026-09-13 14:55:54",
+  "revision": "0db88f4",
+  "branch": "svor-trial",
+  "backend": "svor",
+  "files": [
+    "background_video.mp4",
+    "background_scene.glb",
+    "background_mesh.ply"
+  ]
+}

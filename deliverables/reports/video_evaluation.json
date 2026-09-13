@@ -1,0 +1,181 @@
+{
+  "metric": {
+    "vggt_direct_baseline": {
+      "frames_sampled": 60,
+      "stride": 30,
+      "residue_mean": 48.92835259437561,
+      "residue_p90": 63.55087471008301,
+      "residual_structure_mean": 39.93091529210408,
+      "flicker_ratio_mean": 1.0860281076092921,
+      "flicker_ratio_p90": 1.4623356095830682
+    },
+    "vggt_slam_gated_inpaint_masks": {
+      "frames_sampled": 60,
+      "stride": 30,
+      "residue_mean": 55.372387949625654,
+      "residue_p90": 69.33330154418945,
+      "residual_structure_mean": 39.49567356109619,
+      "flicker_ratio_mean": 0.8603749999117901,
+      "flicker_ratio_p90": 1.1860178731631588,
+      "copy_through_mean": 0.08016860773578074,
+      "note": "Over-coverage fallback retained as snapshots/videos/background_video_gated_inpaint.mp4"
+    },
+    "vggt_slam_precision_inpaint_masks": {
+      "frames_sampled": 60,
+      "stride": 30,
+      "residue_mean": 48.532681401570635,
+      "residue_p90": 62.84052963256836,
+      "residual_structure_mean": 38.83802076975505,
+      "flicker_ratio_mean": 0.966640938868037,
+      "flicker_ratio_p90": 1.3163384024777753,
+      "copy_through_mean": 0.15815256321930352,
+      "note": "Pre-onset precision snapshot retained as snapshots/videos/background_video_preonset.mp4"
+    },
+    "vggt_slam_onset_refined": {
+      "frames_sampled": 60,
+      "stride": 30,
+      "residue_mean": 49.93107328414917,
+      "residue_p90": 63.492753219604495,
+      "residual_structure_mean": 39.634720675150554,
+      "flicker_ratio_mean": 0.9326104523635947,
+      "flicker_ratio_p90": 1.286245720208154,
+      "copy_through_mean": 0.14876593100368962
+    },
+    "vggt_slam_final_20260908": {
+      "frames_sampled": 60,
+      "stride": 30,
+      "residue_mean": 50.39274791081746,
+      "residue_p90": 63.57601547241211,
+      "residual_structure_mean": 38.752529271443684,
+      "flicker_ratio_mean": 0.9487964425606749,
+      "flicker_ratio_p90": 1.2648430190009303,
+      "copy_through_mean": 0.13615523671397625,
+      "temporal_ratio": 0.9448552718625004
+    },
+    "vggt_slam_final_20260909": {
+      "frames_sampled": 60,
+      "stride": 30,
+      "residue_mean": 50.862133439381914,
+      "residue_p90": 63.48390579223633,
+      "residual_structure_mean": 39.23880201975505,
+      "flicker_ratio_mean": 0.9550470038565533,
+      "flicker_ratio_p90": 1.2674972653605532,
+      "copy_through_mean": 0.17496339589810284,
+      "temporal_ratio": null,
+      "windowed_copy": {
+        "frames_sampled": 360,
+        "per_window": [
+          {
+            "start": 866,
+            "end": 989,
+            "frames_sampled": 24,
+            "mean": 0.5766955855635559,
+            "max": 0.7763610202746893
+          },
+          {
+            "start": 0,
+            "end": 74,
+            "frames_sampled": 15,
+            "mean": 0.07725877370583495,
+            "max": 0.32518254724143164
+          },
+          {
+            "start": 745,
+            "end": 792,
+            "frames_sampled": 10,
+            "mean": 0.4091030375822389,
+            "max": 0.6033780857514075
+          }
+        ],
+        "in_window_mean": 0.3896042047945971,
+        "outside_mean": 0.14114539063788348,
+        "overall_mean": 0.17496339589810284
+      },
+      "glitch": {
+        "frames_checked": 59,
+        "glitch_frames": [],
+        "glitch_count": 0,
+        "glitch_fraction": 0.0
+      },
+      "two_pass_rounds": 3,
+      "masks_mean_coverage": 0.3485453767182042,
+      "masks_max_coverage": 0.5794483024691358,
+      "inpaint_mean_coverage": 0.39514994934600156,
+      "inpaint_max_coverage": 0.6380362654320988,
+      "smoothing": {
+        "kernel": 3,
+        "frames": 1799,
+        "note": "flow-aligned RAFT median"
+      },
+      "note": "V1.c (box+evidence seeds) + V2 flow-aligned smoothing + 3-round residual feedback; sofa window 866-989 still under-masked (residual copy ~0.57, needs manual box seeds)"
+    },
+    "vggt_slam_kitchen_20260909": {
+      "frames_sampled": 60,
+      "stride": 30,
+      "residue_mean": 53.525026384989424,
+      "residue_p90": 64.17683334350586,
+      "residual_structure_mean": 38.80581630071004,
+      "flicker_ratio_mean": 0.926167292276133,
+      "flicker_ratio_p90": 1.2528642884038703,
+      "copy_through_mean": 0.12566292112448413,
+      "windowed_copy": {
+        "frames_sampled": 360,
+        "per_window": [
+          {
+            "start": 0,
+            "end": 82,
+            "frames_sampled": 17,
+            "mean": 0.16688139350899825,
+            "max": 0.40165093201111657
+          },
+          {
+            "start": 764,
+            "end": 815,
+            "frames_sampled": 11,
+            "mean": 0.3108784525138027,
+            "max": 0.4452170971561118
+          }
+        ],
+        "in_window_mean": 0.22345166668945712,
+        "outside_mean": 0.11741567752261893,
+        "overall_mean": 0.12566292112448413
+      },
+      "glitch": {
+        "frames_checked": 59,
+        "glitch_frames": [],
+        "glitch_count": 0,
+        "glitch_fraction": 0.0
+      },
+      "masks_mean_coverage": 0.3901812435234938,
+      "masks_max_coverage": 0.5794675925925926,
+      "note": "kitchen prompts added (refrigerator/kitchen cabinet/cabinet/cupboard/sink/kitchen counter/countertop); preserve trimmed to structural (staircase/stairs/door/window)"
+    }
+  },
+  "onset_refinement": {
+    "events": 20,
+    "refined_seed_frames": 376,
+    "mean_latency_frames": 8.65,
+    "improved_events": 18,
+    "note": "Dense SAM 3.1 seeds in 18-frame windows around persistent new foreground components; SAM2 repropagates with 422 intervals."
+  },
+  "inpaint_mask_coverage": {
+    "source_mean": 0.3427177682302926,
+    "precision_mean": 0.3833531928317515,
+    "precision_mean_extra": 0.04063542460145897,
+    "precision_p90": 0.5595736882716049,
+    "precision_max": 0.6342978395061728
+  },
+  "interpretation": {
+    "current": "Pure-background mode: kitchen furniture joins the foreground; only structural walls/windows/doors/stairs preserved.",
+    "effects": "masks 0.3485->0.3902 (max unchanged 0.5795); copy overall 0.175->0.126; flicker 0.955->0.926; former sofa/miss window 866-989 resolved (kitchen prompts), remaining window 764-815 copy 0.311.",
+    "glb": "re-depth from pure-background video: 29,120 points (was 22,089), surface 6,997 verts (was 4,670), plan_ransac 8 walls, holes filled 86.",
+    "incident": "video_source.json marker briefly written inside frames_all crashed ProPainter's directory reader; fixed by moving the marker to the output root (+ regression test asserting frames dirs contain only images).",
+    "fallbacks": [
+      "snapshots/videos/background_video_prekitchen.mp4",
+      "snapshots/masks/snapshots/masks/masks_prekitchen_backup/",
+      "snapshots/masks/snapshots/masks/masks_inpaint_prekitchen/",
+      "snapshots/geometry/background_scene_prekitchen.glb"
+    ]
+  },
+  "deliverable": "outputs/001_sam31_slam/background_video.mp4"
+}

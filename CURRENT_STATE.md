@@ -4,6 +4,10 @@
 
 项目处于**纯背景模式**定稿状态：前景 = 全部家具（含冰箱、厨房柜体、水槽等固定家具）与移动物；保留 = 建筑结构（墙、地板、天花板、门窗、楼梯）。
 
+### 产出发布（GitHub）
+
+每次修改并出片后运行 `python -m tools.publish_deliverables`（vbr 环境）：把 `background_video.mp4 / background_scene.glb / background_mesh.ply` 与关键报告复制进 `deliverables/`、写 manifest、commit 并 push 当前分支到 `origin`。首次使用需一次性配置 GitHub 凭据（PAT：`git config credential.helper store` 后 push 一次输入用户名+token；或加 SSH key 后把 remote 换成 git@github.com 形式）。
+
 ### SVOR 试验后端（`svor-trial` 分支，当前 `backend: svor`）
 
 `video_completion.backend` 已切换为 `svor`（Wan2.1-VACE-1.3B + 两阶段 remove LoRA，Apache-2.0，比 ProPainter 非商用许可更友好）；ProPainter 成品备份在 `snapshots/videos/background_video_presvor.mp4`（md5 与切换前 deliverable 一致）：

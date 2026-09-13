@@ -1,11 +1,11 @@
 {
-  "frames_sampled": 60,
+  "frames_sampled": 57,
   "stride": 30,
-  "residue_mean": 61.66163724263509,
-  "residue_p90": 75.3238006591797,
-  "residual_structure_mean": 43.517017428080244,
-  "flicker_ratio_mean": 1.0849503992914287,
-  "flicker_ratio_p90": 1.5440893277868288,
+  "residue_mean": 61.70276106449596,
+  "residue_p90": 73.35033111572265,
+  "residual_structure_mean": 42.32959051299513,
+  "flicker_ratio_mean": 0.9887414009372837,
+  "flicker_ratio_p90": 1.3917758360550916,
   "basis": {
     "residue_flicker_masks": "masks",
     "copy_through_masks": "masks_inpaint"
@@ -14,16 +14,16 @@
     "frames_sampled": 360,
     "per_window": [
       {
-        "start": 1550,
-        "end": 1798,
-        "frames_sampled": 50,
-        "mean": 0.06531846875149103,
-        "max": 0.1260670450350683
+        "start": 1085,
+        "end": 1130,
+        "frames_sampled": 10,
+        "mean": 0.06602374130852394,
+        "max": 0.10183463058232325
       }
     ],
-    "in_window_mean": 0.06531846875149103,
-    "outside_mean": 0.0721747205386224,
-    "overall_mean": 0.07122246334596526
+    "in_window_mean": 0.06602374130852394,
+    "outside_mean": 0.05769836915226595,
+    "overall_mean": 0.057929629489939787
   },
   "glitch": {
     "frames_checked": 59,

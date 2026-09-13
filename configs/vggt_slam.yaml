@@ -48,6 +48,10 @@ segmentation:
         end: 1798
         box: [0.13, 0.0, 0.59, 0.5]
         prompt: kitchen wall cabinets
+      - start: 1085
+        end: 1130
+        box: [0.58, 0.07, 0.98, 0.78]
+        prompt: hanging clothes
     box_subwindow_frames: 25
     box_expansion: 0.4
     max_coverage_increase: 0.15
@@ -176,7 +180,8 @@ video_completion:
       - models/remove_model_stage2.safetensors
     sample_size: "540,960"     # 面积预算；输出按 16 倍数上取整
     chunk_frames: 77           # Wan VAE 要求帧长 4k+1
-    overlap: 20
+    overlap: 33                # 重叠 33 → 步长 44（≡0 mod 4），潜帧网格跨窗对齐，噪声对齐的前提
+    fade_frames: 16            # 重叠区线性淡化帧数
     num_inference_steps: 20
     gpu_memory_mode: model_full_load
     guidance_scale: 6.0
@@ -198,6 +203,9 @@ video_completion:
     fill_ema_alpha: 0.65
     # 无透传时对生成墙面/地面的轻度稳定权重（抑制墙纹逐帧爬行；拖影明显则调低）
     wall_ema_alpha: 0.3
+    # 跨窗噪声对齐（实验后关闭）：双窗 A/B 实测重叠区差异 9.03→10.03（变差），
+    # 证明不匹配主导因素是 VACE 条件上下文不同而非初始噪声；代码保留备用
+    noise_alignment: false
     # 时序平滑关闭：维持原始生成的时序特性（RAFT 光流中值对扩散填充收益
     # 甚微且引入边界扰动；如填充闪烁明显可改回 enabled: true）
     temporal_smooth:

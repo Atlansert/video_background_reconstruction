@@ -13,14 +13,20 @@
 `video_completion.backend` 已切换为 `svor`（Wan2.1-VACE-1.3B + 两阶段 remove LoRA，Apache-2.0，比 ProPainter 非商用许可更友好）；ProPainter 成品备份在 `snapshots/videos/background_video_presvor.mp4`（md5 与切换前 deliverable 一致）：
 
 - 代码：`vbr/models/svor.py`（`SVORAdapter`：帧/掩膜 → 4k+1 对齐分块（77 帧 + 20 帧重叠）→ 逐块 `conda run -n svor` 调 `predict_SVOR.py` → 重叠区线性交叉淡化 → **掩膜外透传合成**（`composite_source: true`，修复 SVOR 全帧重生成导致的墙位漂移/未遮挡物体闪现）→ 可选 RAFT 时序平滑（复用 `video_completion.temporal_smooth`，抑制填充区闪烁）→ h264+aac 封装）；`cli.py` 按 backend 分发，默认仍 `propainter`
-- 资产：`external/svor/`（上游 tarball，gitignore）+ `external/svor/models/`（两 LoRA + Wan2.1-VACE-1.3B 原始格式基座，17.7GB，hf-mirror 下载）；独立环境 `svor`（python3.10 + torch2.7.0 + diffusers 0.31）；`svor权重/` 为用户下载的原始 LoRA（已 gitignore）
+- 资产：`external/svor/`（上游 tarball，gitignore）+ `external/svor/models/`（两 LoRA + Wan2.1-VACE-1.3B 原始格式基座，17.7GB，hf-mirror 下载；LoRA 原件备份在 `checkpoints/svor-lora/`）；独立环境 `svor`（python3.10 + torch2.7.0 + diffusers 0.31）
 - **正式流水线切换运行（2026-09-12）**：`backend: svor` 全链重跑（分割指纹含 cli.py 触发重分割，掩膜逐像素一致），产物与 `svor_full/background_video_v2.mp4` 逐像素一致（生成确定性强）。同口径对比 ProPainter 快照：整体透传率 **0.071** vs 0.126，glitch 双方 0
 - **边缘框与时序修复（2026-09-12 第二轮）**：`svor.mask_dilation: 8`（生成+合成共用膨胀掩膜，吞掉欠覆盖前景边缘，消除透传暴露的边缘框/墙面灰斑）+ svor 块内 `temporal_smooth.enabled: false`（恢复原始生成时序特性）。中间版指标：透传率 0.070、闪烁比 1.0002、glitch 0
 - **填充突变修复（2026-09-12 第三轮）**：新增 `svor.fill_ema_alpha: 0.65` 光流 EMA 稳定器——上一帧稳定结果沿 Farneback 光流 warp 后在填充区内按权重融入，生成结构跟随相机运动而非逐帧重画（RAFT 中值治不了形变：中位数恒取当前值）。顺序关键：EMA 必须在透传合成之前（在合成后跑会把真实物体边缘拖进填充区，边框复现）
 - **回归 v1 观感（2026-09-12 第四轮，当前配置）**：透传合成会把物体投影（阴影）也如实贴回背景（不如 v1），故 `composite_source: false`，EMA 扩展为双区全帧稳定：填充区 `fill_ema_alpha: 0.65`、墙地区 `wall_ema_alpha: 0.3`（抑制生成墙纹逐帧爬行）。v4 指标 vs v1：墙地时序差 **3.57** vs 3.75、填充深处 **3.96** vs 4.43、透传率 0.068 ≈ v1；快摇段无拖影、阴影由生成自然去除。GLB 46,595 点、glitch 0。如需恢复透传语义（墙地为真实像素）改回 `composite_source: true`（此时 wall_ema_alpha 不生效）。历史版本留档：`snapshots/videos/background_video_svorsmooth.mp4`（合成+平滑）
 - **末段橱柜修补（2026-09-12 第五轮）**：末段上排玻璃橱柜掩膜漏检（区域覆盖仅 0.17–0.35，全局覆盖达标故自动漏检不触发）。通过强制窗口精修（wrapper 临时关 evidence 门 + box_seeds `{1550,1798,[0.13,0,0.59,0.5]}`，已固化进 yaml）把橱柜纳入掩膜（区域覆盖 0.69），仅重生成受影响的 6 个分块（~15 分钟，复用其余 26 块）后重拼接+EMA。橱柜已去除；模型在填充处给出半透明衣柜/面板幻觉（大填充区+厨房上下文下的扩散自主发挥，可选迭代：加大该窗口膨胀）。GLB 52,909 点、透传率 0.071、glitch 0
 - **剩余已知问题**：填充幻觉（帧 1103 衣物、帧 300/末段板块与 ghost 家具）为扩散生成固有，EMA 使其稳定；如需更干净的墙填充可尝试加大窗口膨胀或换 prompt
-- 切换方式：`configs/vggt_slam.yaml` → `video_completion.backend`（当前 svor）；`svor_full/` 为试验产物留档
+- 切换方式：`configs/vggt_slam.yaml` → `video_completion.backend`（当前 svor）；SVOR 试验产物与诊断图集中在 `outputs/001_sam31_slam/experiments/`（含 `svor_full/`、`svor_trial/`、`diagnostics/`）
+
+### 目录结构约定（2026-09-13 重组）
+
+- 项目根：代码（`vbr/ tools/ tests/`）、配置（`configs/`）、权重（`checkpoints/`，含 `svor-lora/`）、外部仓库（`external/`）、输入视频（`video/`）、发布物（`deliverables/`，git 跟踪）
+- `outputs/<run>/` 根部只放流水线契约产物：交付物（视频/GLB/PLY/html）、帧与掩膜目录、状态与报告 JSON、`svor/`（适配器工作目录，代码按固定路径读写）、`slam*/`、`snapshots/{videos,geometry,masks}/`（版本回退快照）
+- 一次性试验与诊断图 → `outputs/<run>/experiments/`；可再生中间目录（`frames_background/`、`masks_empty/`、`masks_*_baseline/`）按惯例直接删除，由流水线重建
 - 已知开销：每块单独 `conda run` 重新加载模型（约 2–3 分钟/块，全片 32 块约 2.5 小时）；尚未接时序平滑/残差反哺等后处理
 
 ### 最终产物（`outputs/001_sam31_slam/`）

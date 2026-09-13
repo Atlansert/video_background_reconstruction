@@ -158,7 +158,7 @@ geometry:
   tsdf_trunc: 0.15
   depth_trunc_quantile: 0.995
 video_completion:
-  backend: svor                # propainter | svor（试验后端）
+  backend: effecterase         # propainter | svor | effecterase（本分支试验后端）
   environment: vbr-seg
   cuda_visible_devices: '7'
   repo_dir: external/ProPainter
@@ -200,6 +200,34 @@ video_completion:
     wall_ema_alpha: 0.3
     # 时序平滑关闭：维持原始生成的时序特性（RAFT 光流中值对扩散填充收益
     # 甚微且引入边界扰动；如填充闪烁明显可改回 enabled: true）
+    temporal_smooth:
+      enabled: false
+  effecterase:
+    # EffectErase（FudanCVL，CVPR 2026，CC BY-NC 4.0 非商用）：Wan2.1-Fun-1.3B
+    # + 方法 LoRA，联合去除物体及其阴影/反射等"效果"。推理固定读视频开头
+    # num_frames 帧，分块策略与 svor 相同（4k+1 对齐 + 重叠交叉淡化）
+    repo_dir: external/effecterase
+    environment: effecterase
+    cuda_visible_devices: '5'  # GPU7 归 svor-trial 约定使用；本分支用 5
+    model_dir: models/Wan-AI/Wan2.1-Fun-1.3B-InP
+    lora_path: models/FudanCVL/EffectErase/EffectErase.ckpt
+    height: 544                # 模型分辨率需为 16 的倍数（源 540→544 轻微拉伸，最终编码缩回）
+    width: 960
+    chunk_frames: 81           # Wan VAE 要求帧长 4k+1
+    overlap: 20
+    num_inference_steps: 50
+    seed: 2025
+    cfg: 1.0
+    lora_alpha: 1.0
+    tiled: false
+    # 掩膜膨胀同 svor：吞掉欠覆盖前景边缘
+    mask_dilation: 8
+    crf: 18
+    preset: medium
+    # 默认不透传（透传会把模型特意去除的物体阴影贴回来）；以生成结果为准
+    composite_source: false
+    fill_ema_alpha: 0.65
+    wall_ema_alpha: 0.3
     temporal_smooth:
       enabled: false
   # Keep inpaint masks close to the segmentation boundary. ProPainter applies

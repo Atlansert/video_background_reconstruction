@@ -1348,5 +1348,55 @@ class SVORTrialTests(unittest.TestCase):
             self.assertGreater(int(frames_out[0][16, 16, 0]), 185)
 
 
+class EffectEraseTests(unittest.TestCase):
+    def test_effecterase_adapter_merges_nested_block_over_sibling_svors(self):
+        from vbr.models.effecterase import EffectEraseAdapter
+
+        # The full video_completion section carries both `svor:` and
+        # `effecterase:` blocks; the adapter must read the effecterase values
+        # and never fall back to the svor ones on shared keys.
+        adapter = EffectEraseAdapter(
+            {
+                "repo_dir": "external/ProPainter",
+                "environment": "vbr-seg",
+                "chunk_frames": 77,
+                "svor": {"repo_dir": "external/svor", "environment": "svor"},
+                "effecterase": {
+                    "repo_dir": "external/effecterase",
+                    "environment": "effecterase",
+                    "chunk_frames": 81,
+                    "height": 544,
+                },
+            },
+            Path("."),
+        )
+        self.assertEqual(adapter.cfg.get("repo_dir"), "external/effecterase")
+        self.assertEqual(adapter.cfg.get("environment"), "effecterase")
+        self.assertEqual(adapter.cfg.get("chunk_frames"), 81)
+        self.assertEqual(adapter.cfg.get("height"), 544)
+
+    def test_effecterase_run_requires_weights(self):
+        from vbr.models.effecterase import EffectEraseAdapter
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            adapter = EffectEraseAdapter({"ffmpeg_bin": "/usr/bin/ffmpeg"}, root)
+            with self.assertRaises(FileNotFoundError):
+                adapter.run(
+                    root / "in.mp4", root / "frames", root / "masks", root / "out.mp4", 5.0
+                )
+
+    def test_first_visible_mask_frame_finds_nonempty_chunk_start(self):
+        from PIL import Image
+
+        from vbr.models.effecterase_infer import first_visible_mask_frame
+
+        empty = Image.new("L", (8, 8), 0)
+        visible = Image.new("L", (8, 8), 0)
+        visible.putpixel((4, 4), 255)
+        self.assertEqual(first_visible_mask_frame([empty, empty, visible]), 2)
+        self.assertEqual(first_visible_mask_frame([empty, empty, empty]), -1)
+
+
 if __name__ == "__main__":
     unittest.main()

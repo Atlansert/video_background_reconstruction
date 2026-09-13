@@ -14,3 +14,8 @@ offline_bundle/
 # Logs and temporaries
 *.log
 .nfs*
+
+# worktree-local symlinks to the main checkout's shared read-only assets
+checkpoints
+offline_bundle
+video

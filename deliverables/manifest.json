@@ -1,12 +1,14 @@
 {
-  "published_at": "2026-09-15 12:40:25",
-  "revision": "6dd2356",
+  "published_at": "2026-09-15 12:58:19",
+  "revision": "b1e7867",
   "branch": "svor-trial",
   "backend": "svor",
   "files": [
     "background_video.mp4",
     "background_scene.glb",
     "background_mesh.ply",
+    "mask_overlay.mp4",
+    "mask_overlay_inpaint.mp4",
     "masks.tar.gz"
   ],
   "mask_dirs": [

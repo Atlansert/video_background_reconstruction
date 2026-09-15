@@ -13,6 +13,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import tarfile
 import time
 from pathlib import Path
 
@@ -25,6 +26,7 @@ FILES = [
     "background_scene.glb",
     "background_mesh.ply",
 ]
+MASK_DIRS = ["masks", "masks_inpaint"]
 REPORTS = [
     "inpainting_evaluation.json",
     "video_evaluation.json",
@@ -54,13 +56,20 @@ def main():
         source = OUT / name
         if source.exists():
             shutil.copy2(source, DEST / "reports" / name)
+    masks_archive = DEST / "masks.tar.gz"
+    with tarfile.open(masks_archive, "w:gz") as tar:
+        for name in MASK_DIRS:
+            source = OUT / name
+            if source.exists():
+                tar.add(source, arcname=name)
 
     manifest = {
         "published_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "revision": git("rev-parse", "--short", "HEAD"),
         "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
         "backend": "svor",
-        "files": FILES,
+        "files": FILES + ["masks.tar.gz"],
+        "mask_dirs": MASK_DIRS,
     }
     (DEST / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 

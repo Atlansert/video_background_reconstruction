@@ -25,6 +25,8 @@ FILES = [
     "background_video.mp4",
     "background_scene.glb",
     "background_mesh.ply",
+    "mask_overlay.mp4",
+    "mask_overlay_inpaint.mp4",
 ]
 MASK_DIRS = ["masks", "masks_inpaint"]
 REPORTS = [
@@ -51,7 +53,11 @@ def main():
     DEST.mkdir(exist_ok=True)
     (DEST / "reports").mkdir(exist_ok=True)
     for name in FILES:
-        shutil.copy2(OUT / name, DEST / name)
+        source = OUT / name
+        if source.exists():
+            shutil.copy2(source, DEST / name)
+        else:
+            print(f"warn: skipping missing {name}")
     for name in REPORTS:
         source = OUT / name
         if source.exists():

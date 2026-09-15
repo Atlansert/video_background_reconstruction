@@ -6,7 +6,7 @@
 
 ### 产出发布（GitHub）
 
-每次修改并出片后运行 `python -m tools.publish_deliverables`（vbr 环境）：把 `background_video.mp4 / background_scene.glb / background_mesh.ply` 与关键报告复制进 `deliverables/`、写 manifest、commit 并 push 当前分支到 `origin`。首次使用需一次性配置 GitHub 凭据（PAT：`git config credential.helper store` 后 push 一次输入用户名+token；或加 SSH key 后把 remote 换成 git@github.com 形式）。
+每次修改并出片后运行 `python -m tools.publish_deliverables`（vbr 环境）：把 `background_video.mp4 / background_scene.glb / background_mesh.ply` 与关键报告复制进 `deliverables/`、写 manifest、commit 并 push 当前分支。GitHub 凭据已配置（`~/.git-credentials`，chmod 600，两个 host：github.com 与 mirror）；因本机直连 github.com TLS 不稳定，`origin` 指向 ghfast 镜像（`https://ghfast.top/https://github.com/Atlansert/...`）。恢复直连：`git remote set-url origin https://github.com/Atlansert/video_background_reconstruction.git`。远端分支：`main`（基线）+ `svor-trial`（当前工作分支，含 deliverables，已推送至 9dec494）。**注意：推送用的 PAT 经聊天与镜像传输过，用后建议在 GitHub 页面吊销并换新。**
 
 ### SVOR 试验后端（`svor-trial` 分支，当前 `backend: svor`）
 

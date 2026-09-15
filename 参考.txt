@@ -1,0 +1,1315 @@
+是的。你这个现象其实**非常有代表性**：如果你原来的 `ProPainter → SVOR` pipeline 已经明显减少了伪影，但出现了新的**时序不一致 / flickering / 局部纹理跳变**，我反而不会第一时间认为是 SVOR “不够强”，而会优先怀疑 **SVOR 的输入、mask 时序、采样窗口以及生成结果融合方式**。
+
+SVOR 本身的论文就明确把 temporal stability 作为核心问题之一，并通过 MUSE、DA-Seg 和两阶段训练来处理 mask defect、突发运动和 temporal stability；官方代码默认推理仍然是基于 Wan2.1-VACE-1.3B，并使用 LoRA。([GitHub][1])
+
+---
+
+# 一、我首先怀疑的不是模型，而是你的 pipeline
+
+你现在大概率是类似：
+
+```text
+原始视频
+   │
+   ▼
+ProPainter
+   │
+   │  去除/初步补全
+   ▼
+SVOR
+   │
+   ▼
+最终背景视频
+```
+
+如果：
+
+> ProPainter：有明显伪影，但时序还算稳定
+> SVOR：伪影减少，但是出现纹理闪烁 / 局部区域跳变
+
+那么很可能发生的是：
+
+$$
+\boxed{
+Spatial\ Quality \uparrow
+\quad\text{但}\quad
+Temporal\ Consistency \downarrow
+}
+$$
+
+这在 diffusion video inpainting 中非常典型。
+
+---
+
+# 二、最可能的原因 ①：SVOR 每个 temporal window 都在“重新生成背景”
+
+这是我认为**最值得首先检查**的地方。
+
+SVOR 本身是基于视频 diffusion 的生成模型，而不是传统意义上的 deterministic propagation。
+
+因此对于：
+
+```text
+Frame 1 ~ 16
+```
+
+和：
+
+```text
+Frame 9 ~ 24
+```
+
+即使它们包含大量相同帧，模型也可能得到：
+
+```text
+Window A:
+墙纹理 = A
+
+Window B:
+墙纹理 = A'
+
+Window C:
+墙纹理 = A''
+```
+
+于是：
+
+```text
+A → A' → A''
+```
+
+人眼看到就是：
+
+> **背景纹理在轻微闪烁。**
+
+SVOR 官方明确针对 temporal mask downsampling 引入 MUSE，但这主要解决的是**目标区域没有被完整 mask / abrupt motion 导致漏删**的问题，并不意味着所有生成区域都会获得严格的 frame-to-frame appearance consistency。([小米研究][2])
+
+---
+
+# 三、尤其要检查你的 SVOR inference window
+
+建议你现在直接检查：
+
+```text
+num_frames
+overlap
+stride
+sample_size
+num_inference_steps
+seed
+```
+
+尤其是：
+
+$$
+\boxed{\text{window overlap}}
+$$
+
+假设：
+
+```text
+Window 1: 0 ───────── 81
+Window 2:       41 ───────── 122
+Window 3:              82 ───────── 163
+```
+
+那么：
+
+```text
+41~81
+```
+
+理论上应该生成非常接近的结果。
+
+如果：
+
+```text
+Window 1 → texture A
+Window 2 → texture B
+```
+
+那么你的 flickering 就很容易出现。
+
+---
+
+# 四、原因 ②：ProPainter → SVOR 的级联可能破坏了原本的 temporal signal
+
+这个我认为与你的情况**高度相关**。
+
+你可能现在做的是：
+
+```text
+I
+↓
+ProPainter
+↓
+I_PP
+↓
+SVOR
+↓
+I_SVOR
+```
+
+问题在于：
+
+SVOR看到的已经不是：
+
+$$
+I
+$$
+
+而是：
+
+$$
+I_{PP}
+$$
+
+而 ProPainter 的输出本身已经包含：
+
+* warp
+* interpolation
+* propagation
+* temporal blending
+* hallucinated pixels
+
+也就是说：
+
+> **你把一个已经被生成/传播过的视频，再交给另一个生成模型。**
+
+这会产生：
+
+$$
+\boxed{
+Propagation\ Error
+\rightarrow
+Diffusion\ Interpretation
+\rightarrow
+New\ Generation
+}
+$$
+
+于是 SVOR 可能把 ProPainter 的微小 temporal noise 当成真实背景变化。
+
+---
+
+# 五、所以我非常建议你测试一个重要 ablation
+
+不要直接：
+
+```text
+ProPainter → SVOR
+```
+
+而测试：
+
+### A
+
+```text
+Original Video
+     ↓
+SVOR
+```
+
+### B
+
+```text
+Original Video
+     ↓
+ProPainter
+     ↓
+SVOR
+```
+
+### C
+
+```text
+Original Video
+     ↓
+ProPainter
+     ↓
+Temporal Stabilization
+     ↓
+SVOR
+```
+
+如果：
+
+```text
+A：时序差
+B：时序更差
+C：明显改善
+```
+
+那么基本就能证明：
+
+> **问题主要来自 ProPainter output 作为 SVOR conditioning/prior 的方式。**
+
+---
+
+# 六、原因 ③：mask 本身可能在闪
+
+这个非常容易被忽略。
+
+假设：
+
+```text
+Frame t
+
+mask = ███████
+```
+
+下一帧：
+
+```text
+Frame t+1
+
+mask = ██████
+```
+
+再下一帧：
+
+```text
+Frame t+2
+
+mask = ████████
+```
+
+那么 diffusion 实际接收到的是：
+
+$$
+M_t \neq M_{t+1} \neq M_{t+2}
+$$
+
+即使真实目标运动很平滑，**mask 边缘变化也会导致生成区域变化**。
+
+---
+
+# 七、SVOR 的 MUSE 正是在解决这个问题的一部分
+
+SVOR 的 MUSE：
+
+> Mask Union for Stable Erasure
+
+本质上是在 temporal window 内做 mask union：
+
+$$
+M_{union}
+=
+\bigcup_t M_t
+$$
+
+从而减少：
+
+> abrupt motion / temporal downsampling 导致的漏删。([GitHub][1])
+
+但是要注意：
+
+**MUSE 解决的是 mask coverage，不等价于 mask 的 temporal smoothness。**
+
+所以你仍然应该检查：
+
+```text
+Mask(t)
+Mask(t+1)
+Mask(t+2)
+```
+
+有没有：
+
+* jitter
+* dilation/erosion
+* hole
+* boundary shift
+* object leakage
+
+---
+
+# 八、原因 ④：你可能把“应该保留”的背景也交给 diffusion 生成了
+
+这个是我特别怀疑的。
+
+理想情况应该是：
+
+```text
+             Original
+                │
+       ┌────────┴────────┐
+       │                 │
+       ▼                 ▼
+  Known Background    Mask Region
+       │                 │
+       │                 ▼
+       │              SVOR
+       │                 │
+       └────────┬────────┘
+                ▼
+             Blend
+```
+
+即：
+
+$$
+I_{final}
+=
+(1-M)I_{original}
++
+MI_{generated}
+$$
+
+而不是：
+
+$$
+I_{final}=I_{SVOR}
+$$
+
+---
+
+# 九、为什么这个区别非常重要？
+
+如果 SVOR 对整张 frame 都进行了 diffusion reconstruction：
+
+```text
+真实背景
+   ↓
+SVOR
+   ↓
+新的背景
+```
+
+那么即使没有 mask 的区域也可能发生：
+
+```text
+texture
+brightness
+color
+fine structure
+```
+
+变化。
+
+于是：
+
+```text
+Frame 1：墙是灰色
+Frame 2：墙稍微亮
+Frame 3：墙稍微暗
+Frame 4：墙又亮
+```
+
+这就是典型：
+
+$$
+\boxed{\text{temporal illumination flickering}}
+$$
+
+---
+
+# 十、原因 ⑤：SVOR 本身的 diffusion stochasticity
+
+如果你的 inference 每次 window 使用不同随机状态：
+
+$$
+\epsilon_1\neq\epsilon_2
+$$
+
+那么：
+
+$$
+x_0^{(1)}
+\neq
+x_0^{(2)}
+$$
+
+即使条件完全一样。
+
+所以一定建议你做：
+
+### 固定 seed
+
+例如：
+
+```python
+generator = torch.Generator(device).manual_seed(42)
+```
+
+然后检查：
+
+> 固定 seed 后 flickering 是否显著降低？
+
+如果降低很多：
+
+$$
+\boxed{
+Random\ Sampling
+}
+$$
+
+就是主要原因之一。
+
+---
+
+# 十一、但是只固定 seed 不一定够
+
+这是一个非常重要的坑。
+
+如果：
+
+```text
+Window 1
+seed = 42
+
+Window 2
+seed = 42
+```
+
+并不意味着：
+
+```text
+Frame 50
+```
+
+在两个 window 中获得完全相同的 noise。
+
+因为：
+
+```text
+Window 1:
+frame 50 = latent position 50
+
+Window 2:
+frame 50 = latent position 9
+```
+
+它在 temporal tensor 中的位置不同。
+
+所以更好的方法不是简单：
+
+> 每个 window seed 相同。
+
+而是要考虑：
+
+$$
+\boxed{\text{overlap-consistent latent/noise}}
+$$
+
+---
+
+# 十二、我反而建议你先尝试“overlap consistency”
+
+假设：
+
+```text
+Window A
+0 ───────── 80
+
+Window B
+40 ───────── 120
+```
+
+对于：
+
+```text
+40~80
+```
+
+这些帧已经在 Window A 生成过。
+
+不要完全重新生成。
+
+可以：
+
+### 方法 1：直接使用 A 的结果
+
+```text
+0~80 → A
+81~120 → B
+```
+
+最简单。
+
+---
+
+### 方法 2：overlap blending
+
+```text
+A:
+40 41 42 ... 80
+ ↓
+权重逐渐下降
+
+B:
+40 41 42 ... 80
+ ↓
+权重逐渐上升
+```
+
+最终：
+
+$$
+I_t
+=
+\alpha_t I_t^A+
+(1-\alpha_t)I_t^B
+$$
+
+通常比硬切好。
+
+---
+
+# 十三、甚至可以进一步做 temporal feature matching
+
+如果你准备改 SVOR 代码，我认为这个方向非常值得尝试。
+
+对于 overlap：
+
+$$
+O = \{t_1,\ldots,t_n\}
+$$
+
+计算：
+
+$$
+F_t^A
+$$
+
+和：
+
+$$
+F_t^B
+$$
+
+然后：
+
+$$
+L_{temporal}
+=
+\sum_t
+\|F_t^A-F_t^B\|_2
+$$
+
+让两个 window 的 latent / feature 尽量一致。
+
+这其实就是：
+
+$$
+\boxed{
+Window\ Consistency
+}
+$$
+
+---
+
+# 十四、另外一个重要原因：SVOR 的 backbone 本身不是专门针对你的场景训练的
+
+SVOR 官方模型基于 **Wan2.1-VACE-1.3B**，再配合两阶段 removal LoRA。官方仓库给出的默认 inference 是 20 steps，并且默认 720×1280 约需要 33 GB GPU memory。([GitHub][1])
+
+它的目标是：
+
+> general video object removal
+
+而不是：
+
+> **camera-static / camera-motion background reconstruction for 3D**
+
+这两个任务其实不同。
+
+你需要的是：
+
+$$
+\text{Background}
+$$
+
+在整个视频中满足：
+
+$$
+\boxed{
+B_t \approx Warp(B_{t-1},F_t)
+}
+$$
+
+而 SVOR 更多是在优化：
+
+$$
+\text{visual plausibility}
++
+\text{object removal}
++
+\text{temporal stability}
+$$
+
+所以它可能：
+
+> 看起来很自然，但不一定严格保持背景几何/纹理。
+
+---
+
+# 十五、所以：要不要加入其他模型？
+
+**我认为可以，而且我不建议简单地再串一个“更强的 inpainting model”。**
+
+更好的方式是：
+
+$$
+\boxed{
+不同模型承担不同职责
+}
+$$
+
+而不是：
+
+```text
+ProPainter
+ ↓
+SVOR
+ ↓
+VideoPainter
+```
+
+这样串 3 个生成模型，反而可能越来越不稳定。
+
+---
+
+# 十六、我最推荐你的架构
+
+我会建议你改成：
+
+```text
+                    Original Video
+                         │
+                         ▼
+                    SAM2 / Mask
+                         │
+                         ▼
+                Temporal Mask Refine
+                         │
+                         ▼
+               ┌──────────────────┐
+               │  ProPainter      │
+               │  Background Prior│
+               └────────┬─────────┘
+                        │
+                        ▼
+                  Confidence Map
+                  / reliability
+                   /          \
+                  /            \
+            reliable        unreliable
+               │                 │
+               ▼                 ▼
+          ProPainter         SVOR
+             result          generation
+               │                 │
+               └────────┬────────┘
+                        ▼
+                 Temporal Fusion
+                        │
+                        ▼
+                  Final Background
+```
+
+这个比：
+
+```text
+ProPainter → SVOR
+```
+
+要合理得多。
+
+---
+
+# 十七、为什么要加 Confidence Map？
+
+这是我认为**非常适合你当前研究方向**的改进。
+
+定义：
+
+$$
+C(x,t)\in[0,1]
+$$
+
+表示：
+
+> ProPainter 在这个像素上的可信程度。
+
+例如：
+
+```text
+C = 1
+```
+
+表示：
+
+> ProPainter 传播得到的背景非常可靠。
+
+那么：
+
+$$
+I_{final}
+=
+C I_{PP}
++
+(1-C)I_{SVOR}
+$$
+
+于是：
+
+### ProPainter 擅长的地方：
+
+保留。
+
+### ProPainter 产生伪影的地方：
+
+让 SVOR 修复。
+
+---
+
+# 十八、Confidence 怎么计算？
+
+你可以先用比较简单的方法。
+
+### 方案 A：Forward-backward optical flow
+
+计算：
+
+$$
+F_{t\rightarrow t+1}
+$$
+
+和：
+
+$$
+F_{t+1\rightarrow t}
+$$
+
+如果：
+
+$$
+F_{t\rightarrow t+1}
++
+Warp(F_{t+1\rightarrow t})
+$$
+
+误差很小：
+
+$$
+C_{flow}\uparrow
+$$
+
+说明这个区域 temporal correspondence 好。
+
+---
+
+### 方案 B：ProPainter reconstruction error
+
+对未遮挡区域：
+
+$$
+E_t(x)
+=
+|I_t(x)
+-
+Warp(I_{t-1})(x)|
+$$
+
+如果：
+
+$$
+E_t(x)\uparrow
+$$
+
+说明 propagation 可能不可靠。
+
+---
+
+### 方案 C：直接使用 SVOR uncertainty
+
+如果你愿意深入 SVOR：
+
+可以考虑利用 diffusion denoising trajectory / attention / latent variation 构造：
+
+$$
+C_{SVOR}
+$$
+
+不过这个实现复杂很多。
+
+---
+
+# 十九、你还可以引入 VideoPainter，但我不会让它直接接在 SVOR 后面
+
+VideoPainter 是目前非常值得测试的另一个 baseline。
+
+它采用：
+
+> dual-stream + context encoder + pretrained video DiT
+
+而且专门解决：
+
+> background context preservation vs foreground generation
+
+并支持 any-length video。([arXiv][3])
+
+所以你可以做：
+
+```text
+Original
+ │
+ ├── ProPainter
+ │
+ ├── SVOR
+ │
+ └── VideoPainter
+        │
+        ▼
+   三个候选结果
+        │
+        ▼
+ Temporal/Flow-based Fusion
+        │
+        ▼
+ Final
+```
+
+而不是：
+
+```text
+SVOR → VideoPainter
+```
+
+---
+
+# 二十、如果你的核心问题是“伪影已经解决，但 temporal consistency 不够”
+
+那么我给你的优先级是：
+
+## 第一优先：不要换模型
+
+先改：
+
+### ① temporal window overlap
+
+### ② 固定 / 对齐 noise
+
+### ③ mask temporal smoothing
+
+### ④ output overlap blending
+
+### ⑤ 原始背景区域直接 copy-back
+
+### ⑥ ProPainter/SVOR confidence fusion
+
+这几个改动成本远低于换模型，而且很可能直接解决你现在 50% 以上的问题。
+
+---
+
+# 二十一、第二优先：测试 VideoPainter
+
+如果 SVOR 仍然存在：
+
+```text
+texture flickering
+```
+
+我会拿 VideoPainter 做 A/B test。
+
+因为 VideoPainter 从设计上就是：
+
+$$
+\boxed{
+Background\ Context
++
+Video\ DiT
+}
+$$
+
+而不是单纯 image diffusion temporal extension。([GitHub][4])
+
+---
+
+# 二十二、第三优先：EffectErase
+
+如果你的伪影主要是：
+
+```text
+人删除了
+↓
+但是
+shadow
+reflection
+deformation
+```
+
+还残留。
+
+那么我会测试 EffectErase。
+
+它在 2026 年提出 VOR 数据集，包含约 **60K paired video pairs**，专门学习：
+
+$$
+object
++
+shadow
++
+reflection
++
+deformation
+$$
+
+的联合删除。([arXiv][5])
+
+这个对你的项目特别有价值，因为**背景重构最怕残留的物体影响被当成真实背景**。
+
+---
+
+# 二十三、第四优先：如果你要研究型方案，考虑“生成 + 传播”双向约束
+
+这是我最推荐你以后往论文方向发展的结构。
+
+不要：
+
+$$
+ProPainter\rightarrow SVOR
+$$
+
+而是：
+
+$$
+\boxed{
+Propagation
+\leftrightarrow
+Generation
+}
+$$
+
+例如：
+
+```text
+                  Original Video
+                       │
+             ┌─────────┴─────────┐
+             ▼                   ▼
+        Propagation          Diffusion
+        ProPainter              SVOR
+             │                   │
+             └─────────┬─────────┘
+                       ▼
+                 Consistency
+                    Module
+                       │
+                       ▼
+                 Final Background
+```
+
+定义：
+
+$$
+L =
+L_{reconstruction}
++
+\lambda_1L_{temporal}
++
+\lambda_2L_{flow}
++
+\lambda_3L_{boundary}
+$$
+
+其中：
+
+### reconstruction
+
+保证背景看起来合理。
+
+### temporal
+
+保证：
+
+$$
+I_t \sim I_{t+1}
+$$
+
+### flow consistency
+
+保证：
+
+$$
+I_t
+\approx
+Warp(I_{t-1},F)
+$$
+
+### boundary
+
+保证 mask 边界没有接缝。
+
+---
+
+# 二十四、对于你的 3D 背景重构，我还会再增加一个约束
+
+这是普通 video inpainting 论文不太关注，但**你非常应该关注**的：
+
+$$
+\boxed{
+Multi-view consistency
+}
+$$
+
+因为你最终可能是：
+
+```text
+Clean Video
+    ↓
+VGGT / VGGT-SLAM
+    ↓
+Camera
+    ↓
+3D Reconstruction
+```
+
+所以最好让：
+
+```text
+Frame t
+Frame t+10
+Frame t+20
+```
+
+中同一个背景点：
+
+$$
+p
+$$
+
+满足：
+
+$$
+\pi_t(P)
+\approx p_t
+$$
+
+$$
+\pi_{t+10}(P)
+\approx p_{t+10}
+$$
+
+如果 SVOR 每一帧生成不同纹理：
+
+```text
+frame t       frame t+10
+
+砖纹 A          砖纹 B
+```
+
+那么 3D reconstruction 很可能把它认为是：
+
+> photometric inconsistency。
+
+---
+
+# 二十五、所以我建议你现在不要急着继续堆模型
+
+你现在这个现象反而非常有研究价值：
+
+> **ProPainter：temporal consistency 较好，但 spatial artifacts 明显**
+>
+> **SVOR：spatial quality 提高，但 temporal consistency 下降**
+
+这其实恰好说明：
+
+$$
+\boxed{
+Propagation
+\quad vs \quad
+Generation
+}
+$$
+
+存在一个 trade-off。
+
+你现在最应该做的是把这个 trade-off 定量化。
+
+---
+
+# 二十六、建议你马上做一个 4 组实验
+
+| 实验 | 方法                                | 看什么          |
+| -- | --------------------------------- | ------------ |
+| A  | ProPainter                        | baseline     |
+| B  | SVOR                              | diffusion 能力 |
+| C  | ProPainter→SVOR                   | 当前方案         |
+| D  | ProPainter/SVOR confidence fusion | **核心实验**     |
+
+然后每组计算：
+
+### Spatial
+
+$$
+LPIPS
+$$
+
+$$
+PSNR
+$$
+
+### Temporal
+
+$$
+tOF
+$$
+
+或：
+
+$$
+Warping\ Error
+$$
+
+### Flicker
+
+计算：
+
+$$
+D_t=
+\left\|
+I_t-Warp(I_{t-1})
+\right\|
+$$
+
+然后：
+
+$$
+Flicker=
+\frac{1}{T-1}
+\sum_tD_t
+$$
+
+这个指标对你现在的问题特别有用。
+
+---
+
+# 二十七、我对你目前情况的判断
+
+按照你描述的：
+
+> **“SVOR 改善了 ProPainter 的伪影问题，但出现时序不一致性”**
+
+我会把可能性排序成：
+
+### ★★★★★
+
+**SVOR temporal window / overlap / stitching**
+
+↓
+
+### ★★★★★
+
+**输入 mask 的 temporal jitter**
+
+↓
+
+### ★★★★☆
+
+**ProPainter 输出作为 SVOR 输入导致误差级联**
+
+↓
+
+### ★★★★☆
+
+**SVOR diffusion stochasticity**
+
+↓
+
+### ★★★★☆
+
+**生成区域过大，没有充分 copy-back 原始背景**
+
+↓
+
+### ★★★☆☆
+
+**SVOR 本身 temporal modeling 能力不足**
+
+↓
+
+### ★★☆☆☆
+
+**需要换成更强的视频生成模型**
+
+---
+
+# 二十八、最终建议
+
+**短期：**
+
+不要直接：
+
+```text
+SVOR → VideoPainter → EffectErase
+```
+
+这样很可能越来越糟。
+
+先把：
+
+```text
+ProPainter + SVOR
+```
+
+改成：
+
+$$
+\boxed{
+ProPainter
++
+SVOR
++
+Temporal\ Fusion
+}
+$$
+
+尤其重点做：
+
+```text
+1. mask temporal smoothing
+2. window overlap
+3. overlap consistency
+4. fixed/aligned noise
+5. original-region copy-back
+6. flow-based fusion
+```
+
+**中期：**
+
+拿 **VideoPainter** 做独立 baseline；它的设计就是围绕背景 context 和视频 DiT 的平衡，并且支持 any-length。([GitHub][4])
+
+**如果残留 shadow / reflection：**
+
+测试 **EffectErase**。它专门把 object effects 纳入 video object removal，而且有 60K paired videos。([arXiv][5])
+
+**如果你的最终目标是 3D 背景重构：**
+
+不要只优化：
+
+$$
+\text{video perceptual quality}
+$$
+
+而应该优化：
+
+$$
+\boxed{
+\text{Inpainting Quality}
++
+\text{Temporal Consistency}
++
+\text{Multi-view/Geometric Consistency}
+}
+$$
+
+这会比单纯追求“换一个 SOTA inpainting 模型”更重要。
+
+另外，如果你能上传一小段**原始视频 + mask + ProPainter 输出 + SVOR 输出**（最好 5–20 秒即可），我可以直接根据你的实际结果判断到底是 **window stitching、mask jitter、diffusion flickering、ProPainter→SVOR 信息级联**中的哪一种，并给你具体到 SVOR 代码层面的修改方案。
+
+[1]: https://github.com/xiaomi-research/svor?utm_source=chatgpt.com "GitHub - xiaomi-research/svor: SVOR - Stable Video Object Removal · GitHub"
+[2]: https://xiaomi-research.github.io/svor/?utm_source=chatgpt.com "SVOR: Stable Video Object Removal under Imperfect Conditions"
+[3]: https://arxiv.org/abs/2503.05639?utm_source=chatgpt.com "VideoPainter: Any-length Video Inpainting and Editing with Plug-and-Play Context Control"
+[4]: https://github.com/TencentARC/VideoPainter?utm_source=chatgpt.com "GitHub - TencentARC/VideoPainter: [SIGGRAPH2025] Official repo for paper \"Any-length Video Inpainting and Editing with Plug-and-Play Context Control\" · GitHub"
+[5]: https://arxiv.org/abs/2603.19224?utm_source=chatgpt.com "EffectErase: Joint Video Object Removal and Insertion for High-Quality Effect Erasing"

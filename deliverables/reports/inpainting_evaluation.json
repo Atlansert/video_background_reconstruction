@@ -1,11 +1,11 @@
 {
-  "frames_sampled": 57,
+  "frames_sampled": 60,
   "stride": 30,
-  "residue_mean": 61.595152603952506,
-  "residue_p90": 73.49036712646485,
-  "residual_structure_mean": 42.225279690926534,
-  "flicker_ratio_mean": 0.9876008410438046,
-  "flicker_ratio_p90": 1.3895302865670913,
+  "residue_mean": 60.54865474700928,
+  "residue_p90": 72.93960647583008,
+  "residual_structure_mean": 42.56464474995931,
+  "flicker_ratio_mean": 0.9998922316130168,
+  "flicker_ratio_p90": 1.4010130821600062,
   "basis": {
     "residue_flicker_masks": "masks",
     "copy_through_masks": "masks_inpaint"
@@ -14,16 +14,23 @@
     "frames_sampled": 360,
     "per_window": [
       {
-        "start": 1085,
-        "end": 1130,
-        "frames_sampled": 10,
-        "mean": 0.06522164436686544,
-        "max": 0.10213993444740001
+        "start": 1500,
+        "end": 1652,
+        "frames_sampled": 31,
+        "mean": 0.09117716898608969,
+        "max": 0.19163830379617372
+      },
+      {
+        "start": 1652,
+        "end": 1799,
+        "frames_sampled": 29,
+        "mean": 0.08782991295447504,
+        "max": 0.3588622410670907
       }
     ],
-    "in_window_mean": 0.06522164436686544,
-    "outside_mean": 0.05656456466592507,
-    "overall_mean": 0.0568050391020623
+    "in_window_mean": 0.08955932857080927,
+    "outside_mean": 0.05767196963306566,
+    "overall_mean": 0.06298652945602293
   },
   "glitch": {
     "frames_checked": 59,

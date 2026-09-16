@@ -44,9 +44,21 @@ segmentation:
     # Box seeds: null -> derive per-subwindow boxes from the existing mask
     # blobs (expanded); a list overrides with manual {start, end, box, prompt?}.
     box_seeds:
-      - start: 1550
-        end: 1798
-        box: [0.13, 0.0, 0.59, 0.5]
+      - start: 1500
+        end: 1652
+        box: [0.05, 0.12, 0.32, 0.98]
+        prompt: refrigerator
+      - start: 1500
+        end: 1652
+        box: [0.28, 0.0, 0.98, 0.42]
+        prompt: kitchen wall cabinets
+      - start: 1652
+        end: 1799
+        box: [0.0, 0.05, 0.24, 0.95]
+        prompt: refrigerator
+      - start: 1652
+        end: 1799
+        box: [0.35, 0.0, 0.95, 0.45]
         prompt: kitchen wall cabinets
       - start: 1085
         end: 1130

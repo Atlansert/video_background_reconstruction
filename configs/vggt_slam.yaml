@@ -199,10 +199,10 @@ video_completion:
     guidance_scale: 6.0
     seed: 43
     dilation: 0
-    # svor 专用掩膜膨胀（px）：把掩膜欠覆盖的前景边缘吞进填充区，消除
-    # 透传合成暴露的边缘框（与 ProPainter 内部 8px 等效；独立于下方
-    # ProPainter 用的 mask_dilation）
-    mask_dilation: 8
+    # 掩膜额外膨胀（px）：masks_inpaint 已含 close9+时序并集±2+expand1 的膨胀，
+    # 再叠加会过度覆盖（实测 +37% 面积）并导致大填充区生成退化（帧0-50 纯黑块）。
+    # 保持 0；仅当使用未膨胀的 masks/ 作为输入时才需要设置。
+    mask_dilation: 0
     weight_dtype: bfloat16
     crf: 18
     preset: medium

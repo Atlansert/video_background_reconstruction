@@ -66,7 +66,10 @@ segmentation:
         prompt: hanging clothes
     box_subwindow_frames: 25
     box_expansion: 0.4
-    max_coverage_increase: 0.15
+    # 大面积物体（冰箱/壁橱等占画面 >15%）的精修种子会因该上限被拒，
+    # 导致掩膜覆盖在帧间剧烈抖动（实测 0.00↔1.00），物体时去时留。
+    # 放宽到 0.45 以容纳大物体，同时仍拦截"整帧被误判为前景"的失控增长。
+    max_coverage_increase: 0.45
     evidence_enabled: true
     evidence_dilate_px: 5
     evidence_min_overlap: 0.5
@@ -191,14 +194,14 @@ video_completion:
       - models/remove_model_stage1.safetensors
       - models/remove_model_stage2.safetensors
     sample_size: "540,960"     # 面积预算；输出按 16 倍数上取整
-    chunk_frames: 77           # Wan VAE 要求帧长 4k+1
-    overlap: 33                # 重叠 33 → 步长 44（≡0 mod 4），潜帧网格跨窗对齐，噪声对齐的前提
+    chunk_frames: 81           # 官方默认 81（=4×20+1）；实测 77 帧窗口的黑斑退化率是 81 帧的 2-3 倍
+    overlap: 41                # 重叠 41 → 步长 40（≡0 mod 4），潜帧网格跨窗对齐
     fade_frames: 16            # 重叠区线性淡化帧数
     num_inference_steps: 20
     gpu_memory_mode: model_full_load
     guidance_scale: 6.0
     seed: 43
-    dilation: 0
+    dilation: 6                # 官方默认 6：预处理阶段再膨胀掩膜，给模型更多上下文（实测黑斑 0.95%→0.20%）
     # 掩膜额外膨胀（px）：masks_inpaint 已含 close9+时序并集±2+expand1 的膨胀，
     # 再叠加会过度覆盖（实测 +37% 面积）并导致大填充区生成退化（帧0-50 纯黑块）。
     # 保持 0；仅当使用未膨胀的 masks/ 作为输入时才需要设置。

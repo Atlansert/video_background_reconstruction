@@ -15,16 +15,23 @@
   },
 
   "flicker_and_edge_mechanism": {
+    "root_cause": "掩膜口径不一致：模型内部用时序并集(interpolate_MUSE 每4帧最大池化,videox_fun/utils/utils.py,调用点 pipeline_SVOR.py:320)，而 vbr/models/svor.py::_composite_source 合成时用逐帧原始掩膜。二者冲突 -> 空掩膜帧把目标贴回 -> 闪烁+边缘",
     "trigger": "maskdrop0.5 是缺陷掩膜基准：24/48 帧掩膜被整帧丢弃（帧序 .MM..MMM.MM....M.M..MM.MMMM..MM.MM）",
-    "mechanism": "composite_source 为逐帧 2D 融合 out=src*(1-alpha)+gen*alpha，alpha 取自当前帧掩膜；空掩膜帧 alpha≈0 把源像素(含目标)贴回，有掩膜帧 alpha≈1 目标已消失 -> 目标忽现忽隐；羽化 alpha 边界表现为边缘接缝",
-    "metrics_camel_480x270": {
-      "object_region_change_empty_mask_frames": {"official": 25.7, "local_raw": 37.3, "per_frame_composite": 16.9, "union_composite": 33.1},
-      "object_region_change_masked_frames": {"official": 29.8, "local_raw": 40.4, "per_frame_composite": 32.9, "union_composite": 36.2},
-      "frame_flicker_overall": {"official": 16.74, "local_raw": 15.43, "per_frame_composite": 24.44, "union_composite": 17.06},
-      "flicker_on_mask_toggle": {"official": 16.81, "local_raw": 15.63, "per_frame_composite": 30.88, "union_composite": 17.28},
-      "mask_edge_band_gradient": {"official": 81.25, "local_raw": 63.53, "per_frame_composite": 104.71, "union_composite": 67.86}
+    "official_muse_code": "videox_fun/utils/utils.py::interpolate_MUSE: grouped_frames.view(bs,c,(depth-1)//4,4,h,w); torch.max(grouped_frames,dim=3)[0]",
+    "final_metric_table_camel_480x270_48f": {
+      "_columns": ["structure_kept", "shadow_signed", "flicker", "flicker_on_toggle", "edge_band", "obj_empty", "obj_masked"],
+      "official":         [0.973, -3.72, 17.59, 16.81, 81.25, 25.7, 29.8],
+      "local_raw":        [0.773, -5.56, 16.29, 15.63, 63.53, 37.3, 40.4],
+      "local_per_frame_composite": [1.000, 0.00, 22.91, 30.88, 104.71, 16.9, 32.9],
+      "local_union_composite_FINAL": [0.938, 1.03, 18.64, 17.28, 67.86, 33.1, 36.2]
     },
-    "proper_fix": "时序并集掩膜（窗口内任一帧被掩膜的像素都视为移除），对应论文 MUSE（Mask Union for Stable Erasure）"
+    "final_metric_table_bmx_native_854x480_81f": {
+      "_columns": ["structure_kept", "shadow_signed", "flicker", "flicker_on_toggle", "edge_band"],
+      "local_raw": [0.842, -3.45, 19.57, 24.74, 47.36],
+      "local_per_frame_composite": [0.998, 0.00, 21.17, 25.16, 81.55],
+      "local_union_composite_FINAL": [0.936, -1.34, 20.30, 24.94, 49.51]
+    },
+    "proper_fix": "合成侧改用时序并集掩膜（与模型内部 MUSE 口径一致）；实测闪烁 30.88->17.28、边界 104.71->67.86"
   },
 
   "impact_on_real_pipeline": {

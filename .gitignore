@@ -10,8 +10,6 @@ video/
 external/
 source/
 offline_bundle/
-svor_camel_check/
-svor_official_run/
 
 # Logs and temporaries
 *.log

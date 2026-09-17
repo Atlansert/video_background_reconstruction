@@ -23,7 +23,7 @@
 - **架构对照与最终定版（2026-09-13 第七轮）**：ProPainter 在当前掩膜上重跑后同尺对照——**warping error 2.00（填充区 2.44）远差于 SVOR+EMA 的 1.44**，"PP 稳定/SVOR 闪"的直觉被数据推翻（PP 传播伪影逐帧随光流漂移）；置信度融合（`tools/confidence_fusion.py`，C=PP 时序自洽度）实测恶化至 1.97 且阴影/糊影回归，**放弃**。最终采纳 EMA 0.75/0.45（v6）：warping-error **1.442**、透传率 **0.057**、闪烁比 **0.988**、glitch 0、GLB 28,168 点。感知层面的剩余不一致来自幻觉事件与长时程漂移（架构固有），逐帧 jitter 已优于 ProPainter
 - **注意**：`box_seeds` 位于 segmentation 配置节内，**改动会使分割指纹失效触发全量重分割**（本轮流水线因此绕过、改由适配器直连出片）；下次全链运行会补一次重分割
 - **剩余已知问题**：填充幻觉（帧 300/末段板块与 ghost 家具）为扩散生成固有，EMA 使其稳定；如需进一步可测试参考文档的置信度融合架构（ProPainter 先验+置信度图）或 VideoPainter 基线
-- 切换方式：`configs/vggt_slam.yaml` → `video_completion.backend`（当前 svor）；SVOR 试验产物与诊断图集中在 `outputs/001_sam31_slam/experiments/`（含 `svor_full/`、`svor_trial/`、`diagnostics/`）
+- 切换方式：`configs/vggt_slam.yaml` → `video_completion.backend`（当前 svor）；历史版本与对照产物见 `snapshots/videos/`，完整交付与官方核验产物发布于 GitHub Release `svor-final-20260917`
 
 ### 与官方 SVOR 的配置一致性核对（2026-09-16）
 
@@ -53,15 +53,16 @@
 | 掩膜内闪烁（越低越稳） | 19.14 | 22.01 |
 | 逐像素差 | — | 4.42/255 |
 
-结论：**移除力度与背景保留与官方一致，掩膜外结构保留还略好**；闪烁略高（22.0 vs 19.1）但同量级。产出留档于 `svor_camel_check/official_rerun/`（`compare_grid.png`、`official_2panel.mp4`、`run.log`）。
+结论：**移除力度与背景保留与官方一致，掩膜外结构保留还略好**；闪烁略高（22.0 vs 19.1）但同量级。产出留档于 Release `svor-final-20260917`（`compare_grid.png`、`official_2panel.mp4`、`official_rerun_run.log`）。
 
-配合 `svor_camel_check/final_report.json`（前序会话三轮复核）的既有结论：官方代码与权重均正确的另一关键发现是——**SVOR 整帧重生成会连带重画掩膜外的真实结构**（bmx 原生 854×480 实测 raw 仅保留 83.4% 未遮挡结构），这正是项目主流程启用 `composite_source` 的依据。
+配合 `deliverables/svor_validation/final_report.json`（三轮复核）的既有结论：官方代码与权重均正确的另一关键发现是——**SVOR 整帧重生成会连带重画掩膜外的真实结构**（bmx 原生 854×480 实测 raw 仅保留 83.4% 未遮挡结构），这正是项目主流程启用 `composite_source` 的依据。
 
 ### 目录结构约定（2026-09-13 重组）
 
 - 项目根：代码（`vbr/ tools/ tests/`）、配置（`configs/`）、权重（`checkpoints/`，含 `svor-lora/`）、外部仓库（`external/`）、输入视频（`video/`）、发布物（`deliverables/`，git 跟踪）
 - `outputs/<run>/` 根部只放流水线契约产物：交付物（视频/GLB/PLY/html）、帧与掩膜目录、状态与报告 JSON、`svor/`（适配器工作目录，代码按固定路径读写）、`slam*/`、`snapshots/{videos,geometry,masks}/`（版本回退快照）
-- 一次性试验与诊断图 → `outputs/<run>/experiments/`；可再生中间目录（`frames_background/`、`masks_empty/`、`masks_*_baseline/`）按惯例直接删除，由流水线重建
+- 一次性试验与诊断图在规划阶段放入临时位置，确认无用的即删；可再生中间目录（`frames_background/`、`masks_empty/`、`masks_*_baseline/`）按惯例直接删除，由流水线重建
+- 历次 SVOR 对照实验的一次性目录（`svor_camel_check/`、`svor_official_run/`、`outputs/<run>/experiments/`、`outputs/<run>/propainter/`）已于 2026-09-17 清理；其关键结论与产物固化在 CURRENT_STATE、`deliverables/svor_validation/` 与 Release 中
 - 已知开销：每块单独 `conda run` 重新加载模型（约 2–3 分钟/块，全片 32 块约 2.5 小时）；尚未接时序平滑/残差反哺等后处理
 
 ### 最终产物（`outputs/001_sam31_slam/`）

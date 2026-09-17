@@ -200,34 +200,27 @@ Laplacian 锐度从 1084.7 跳到 3444.7（真存 GIF 再读回 3444.7），逼�
 
 ## 复现
 
-camel 干净输入与掩膜已保存（`svor_camel_check/assets/`），可直接重跑推理：
-
-```bash
-cd /data/lzx/video_background_reconstruction/external/svor
-CUDA_VISIBLE_DEVICES=4 conda run --no-capture-output -n svor python predict_SVOR.py \
-  --input_video ../../svor_camel_check/assets/input_padded49.mp4 \
-  --input_mask_video ../../svor_camel_check/assets/mask_padded49.mp4 \
-  --save_dir ../../svor_camel_check/local_output/rerun \
-  --model_name models/Wan2.1-VACE-1.3B \
-  --lora_path models/remove_model_stage1.safetensors models/remove_model_stage2.safetensors \
-  --sample_size 540,960 --video_length 49 --fps 25 \
-  --num_inference_steps 20 --gpu_memory_mode model_full_load \
-  --guidance_scale 6.0 --seed 43 --dilation 6 --weight_dtype bfloat16
-```
-
-bmx 干净素材复现：
+**bmx-bumps（官方素材，推荐）** —— 仓库自带，无需额外文件：
 
 ```bash
 cd /data/lzx/video_background_reconstruction/external/svor
 CUDA_VISIBLE_DEVICES=4 conda run --no-capture-output -n svor python predict_SVOR.py \
   --input_video samples/input/bmx-bumps_raw.mp4 \
   --input_mask_video samples/input/bmx-bumps_mask.mp4 \
-  --save_dir /tmp/bmx_out --sample_size 720,1280 --video_length 81 --fps 16 \
+  --save_dir /tmp/bmx_out \
   --model_name models/Wan2.1-VACE-1.3B \
   --lora_path models/remove_model_stage1.safetensors models/remove_model_stage2.safetensors \
   --num_inference_steps 20 --gpu_memory_mode model_full_load \
-  --guidance_scale 6.0 --seed 43 --dilation 6 --weight_dtype bfloat16
+  --guidance_scale 6.0 --seed 43 --weight_dtype bfloat16
 ```
 
-`final_report.json` 为完整指标存档；工作目录（含四组 dilation/分辨率对照与全部原始输出）
-为 `svor_camel_check/`，该目录不纳入 git 跟踪，仅此处发布对照产物。
+不加 `--sample_size`/`--video_length` 即为官方默认（720,1280 / 81 帧），与本目录
+`official_code_run/` 的跑法一致。
+
+**camel（非官方素材）** 的干净输入/掩膜由绿色叠加预览反解得到，随
+`svor_camel_check/` 工作目录于 2026-09-17 清理而移除；如需重跑，可从官方
+`docs/assets/videos/input_maskdrop0.5/camel.mp4` 预览按本目录开头所述方法重新反解，
+或直接取 Release `svor-final-20260917` 中的对照产物查看结论。
+
+`final_report.json` 为完整指标存档；一次性工作目录（含四组 dilation/分辨率对照与
+全部原始输出）不纳入 git 跟踪，结论与关键产物固化在 Release 与本目录。

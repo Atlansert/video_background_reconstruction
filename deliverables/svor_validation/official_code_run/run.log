@@ -1,0 +1,44 @@
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/dist/wan_xfuser.py:32: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  @amp.autocast(enabled=False)
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/models/wan_transformer3d.py:213: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  @amp.autocast(enabled=False)
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/models/wan_transformer3d.py:224: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  @amp.autocast(enabled=False)
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/models/wan_transformer3d.py:283: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  @amp.autocast(enabled=False)
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/pipeline/pipeline_SVOR.py:137: FutureWarning: Accessing config attribute `spacial_compression_ratio` directly via 'AutoencoderKLWan' object attribute is deprecated. Please access 'spacial_compression_ratio' over 'AutoencoderKLWan's config object instead, e.g. 'unet.config.spacial_compression_ratio'.
+  self.video_processor = VideoProcessor(vae_scale_factor=self.vae.spacial_compression_ratio)
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/pipeline/pipeline_SVOR.py:138: FutureWarning: Accessing config attribute `spacial_compression_ratio` directly via 'AutoencoderKLWan' object attribute is deprecated. Please access 'spacial_compression_ratio' over 'AutoencoderKLWan's config object instead, e.g. 'unet.config.spacial_compression_ratio'.
+  self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae.spacial_compression_ratio)
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/pipeline/pipeline_SVOR.py:140: FutureWarning: Accessing config attribute `spacial_compression_ratio` directly via 'AutoencoderKLWan' object attribute is deprecated. Please access 'spacial_compression_ratio' over 'AutoencoderKLWan's config object instead, e.g. 'unet.config.spacial_compression_ratio'.
+  vae_scale_factor=self.vae.spacial_compression_ratio,
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/pipeline/pipeline_SVOR.py:306: FutureWarning: Accessing config attribute `temporal_compression_ratio` directly via 'AutoencoderKLWan' object attribute is deprecated. Please access 'temporal_compression_ratio' over 'AutoencoderKLWan's config object instead, e.g. 'unet.config.temporal_compression_ratio'.
+  new_depth = int((depth + 3) // self.vae.temporal_compression_ratio)
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/pipeline/pipeline_SVOR.py:307: FutureWarning: Accessing config attribute `spacial_compression_ratio` directly via 'AutoencoderKLWan' object attribute is deprecated. Please access 'spacial_compression_ratio' over 'AutoencoderKLWan's config object instead, e.g. 'unet.config.spacial_compression_ratio'.
+  height = 2 * (int(height) // (self.vae.spacial_compression_ratio * 2))
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/pipeline/pipeline_SVOR.py:308: FutureWarning: Accessing config attribute `spacial_compression_ratio` directly via 'AutoencoderKLWan' object attribute is deprecated. Please access 'spacial_compression_ratio' over 'AutoencoderKLWan's config object instead, e.g. 'unet.config.spacial_compression_ratio'.
+  width = 2 * (int(width) // (self.vae.spacial_compression_ratio * 2))
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/pipeline/pipeline_SVOR.py:313: FutureWarning: Accessing config attribute `spacial_compression_ratio` directly via 'AutoencoderKLWan' object attribute is deprecated. Please access 'spacial_compression_ratio' over 'AutoencoderKLWan's config object instead, e.g. 'unet.config.spacial_compression_ratio'.
+  bs, depth, height, self.vae.spacial_compression_ratio, width, self.vae.spacial_compression_ratio
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/pipeline/pipeline_SVOR.py:317: FutureWarning: Accessing config attribute `spacial_compression_ratio` directly via 'AutoencoderKLWan' object attribute is deprecated. Please access 'spacial_compression_ratio' over 'AutoencoderKLWan's config object instead, e.g. 'unet.config.spacial_compression_ratio'.
+  bs, self.vae.spacial_compression_ratio * self.vae.spacial_compression_ratio, depth, height, width
+loaded 3D transformer's pretrained weights from models/Wan2.1-VACE-1.3B/./ ...
+### missing keys: 0; 
+### unexpected keys: 0;
+[] []
+### missing keys: 0; 
+### unexpected keys: 0;
+[] []
+[INFO] Loading LoRA: models/remove_model_stage1.safetensors, weight: 1.0
+[INFO] Loading LoRA: models/remove_model_stage2.safetensors, weight: 1.0
+  0%|          | 0/20 [00:00<?, ?it/s]/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/pipeline/pipeline_SVOR.py:585: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(dtype=weight_dtype):
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/models/vace_transformer3d.py:307: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with amp.autocast(dtype=torch.float32):
+/data/lzx/video_background_reconstruction/svor_official_run/svor/videox_fun/models/wan_transformer3d.py:184: UserWarning: Padding mask is disabled when using scaled_dot_product_attention. It can have a significant impact on performance.
+  warnings.warn(
+  5%|▌         | 1/20 [00:11<03:30, 11.08s/it] 10%|█         | 2/20 [00:19<02:52,  9.57s/it] 15%|█▌        | 3/20 [00:30<02:53, 10.20s/it] 20%|██        | 4/20 [00:41<02:47, 10.49s/it] 25%|██▌       | 5/20 [00:52<02:39, 10.65s/it] 30%|███       | 6/20 [01:03<02:30, 10.75s/it] 35%|███▌      | 7/20 [01:14<02:20, 10.82s/it] 40%|████      | 8/20 [01:25<02:10, 10.86s/it] 45%|████▌     | 9/20 [01:36<01:59, 10.89s/it] 50%|█████     | 10/20 [01:47<01:49, 10.91s/it] 55%|█████▌    | 11/20 [01:58<01:38, 10.92s/it] 60%|██████    | 12/20 [02:09<01:27, 10.93s/it] 65%|██████▌   | 13/20 [02:20<01:16, 10.94s/it] 70%|███████   | 14/20 [02:30<01:05, 10.94s/it] 75%|███████▌  | 15/20 [02:41<00:54, 10.95s/it] 80%|████████  | 16/20 [02:52<00:43, 10.95s/it] 85%|████████▌ | 17/20 [03:03<00:32, 10.95s/it] 90%|█████████ | 18/20 [03:14<00:21, 10.96s/it] 95%|█████████▌| 19/20 [03:25<00:10, 10.96s/it]100%|██████████| 20/20 [03:36<00:00, 10.95s/it]100%|██████████| 20/20 [03:36<00:00, 10.84s/it]
+huggingface/tokenizers: The current process just got forked, after parallelism has already been used. Disabling parallelism to avoid deadlocks...
+To disable this warning, you can either:
+	- Avoid using `tokenizers` before the fork if possible
+	- Explicitly set the environment variable TOKENIZERS_PARALLELISM=(true | false)

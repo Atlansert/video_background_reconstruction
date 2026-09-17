@@ -3,6 +3,20 @@
 用官方仓库示例检验本地 SVOR（`external/svor` + `Wan2.1-VACE-1.3B` + 两阶段 remove LoRA）的效果，
 与官方发布结果对照。检验日期 2026-09-17，GPU 4 号卡。
 
+## ⭐ 先看这个：官方代码零修改运行
+
+**[`official_code_run/`](official_code_run/README.md)** —— 用官方 tarball 原样解包的代码 + 已验证的官方权重
++ 官方示例（`samples/input/bmx-bumps_{raw,mask}.mp4`），**零修改、无后处理**跑一遍：
+
+- 官方代码输出与官方发布结果**几乎重合**：整帧差 **3.92/255**，目标移除力度 91.6 vs 92.2
+- 证据：[`official_code_run/official_code_vs_released_3panel.mp4`](official_code_run/official_code_vs_released_3panel.mp4)
+- 说明：官方仓库**只有 bmx-bumps 这一组**带独立掩膜的示例；camel 等 maskdrop0.5 素材是展示用预览，
+  无配套掩膜、不可直接推理
+- 结论：**本机环境、代码、权重正确**
+
+> 下面各节是在**非官方素材 camel** 上做的分析（输入由预览反解、掩膜由叠加位置提取，属自建流程），
+> 用于解释之前观察到的现象；其定量结论的可信度低于本页 `official_code_run/`。
+
 ## 最终对比视频（先看这个）
 
 | 文件 | 内容 |

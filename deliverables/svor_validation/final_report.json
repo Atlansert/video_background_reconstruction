@@ -1,0 +1,100 @@
+{
+  "task": "检验本地 SVOR（external/svor + Wan2.1-VACE-1.3B + 两阶段 remove LoRA）的效果",
+  "date": "2026-09-17",
+  "gpu": "CUDA_VISIBLE_DEVICES=4（7 号卡被另一会话占用，未互相干扰）",
+  "verdict": "本地 SVOR 与官方一致。camel 示例上观察到的“本地偏软”是 GIF 抖动量化造成的测量假象，不是模型问题；在官方干净素材 bmx-bumps 上本地与官方逐像素差仅 3.9~4.8/255。",
+
+  "track_A_camel_maskdrop0.5": {
+    "material_caveat": "输入与官方结果都是 256 色调色板 GIF（R/G 各 8 级、B 仅 4 级），且输入是从“50% 纯绿叠加预览图”反解而来。任何离开同一量化口径的像素级指标都会被量化噪声主导。",
+    "resolution": "480x270",
+    "frames": 48,
+    "sharpness_laplacian_variance": {
+      "clean_input_recon": 5628.3,
+      "official_result_gif": 5254.8,
+      "local_lossless_native_480x272": 1084.7,
+      "local_lossless_720x1280": 675.6
+    },
+    "why_official_gif_reads_sharp_and_local_does_not": {
+      "adjacent_pixel_mean_abs_diff": {
+        "official_result_gif": 18.64,
+        "input_gif": 19.16,
+        "local_lossless": 10.26
+      },
+      "high_freq_residual_std_after_9x9_median": {
+        "official_result_gif": 22.86,
+        "input_gif": 23.27,
+        "local_lossless": 18.07
+      },
+      "smoking_gun": "把本地无损输出套用与官方 GIF 相同的 Floyd-Steinberg 抖动量化后，锐度从 1084.7 跳到 3444.7（真正存成 GIF 再读回同为 3444.7），逼近官方 5254.8。即官方 GIF 的“高锐度”主体是抖动噪声，而非真实细节。",
+      "local_sharpness_by_storage_path": {
+        "lossless_png": 1084.7,
+        "palette_quantize_nodither": 1776.0,
+        "palette_quantize_floyd_steinberg": 3454.7,
+        "real_gif_roundtrip": 3444.7
+      },
+      "reconciliation_vs_non_quantized_camel": {
+        "source": "external/svor/docs/assets/videos/{input_maskdrop0.5,result_maskdrop0.5}/camel.mp4（320x180，无 GIF 量化）",
+        "sharpness_320x180": {"docs_input": 1531.7, "docs_official_result": 1378.5, "local_output": 1090.0},
+        "note": "换用无量化参照后，本地与官方的锐度差距从 GIF 口径下的 5~6 倍收敛到约 21%（1090 vs 1378.5）。残余差距与“本地按 480x272 生成再缩到 320x180、官方按原生分辨率生成”有关，属正常方法差异，且非 gif 抖动。逐像素差 11.05/255 因官方 docs 为 81 帧而 gif 系列为 48 帧，帧索引未严格时间对齐，仅作趋势参考。"
+      }
+    },
+    "local_vs_official_at_matched_resolution_and_palette": {
+      "masked_change": 23.54,
+      "bg_change": 15.56,
+      "mean_abs_diff_per_255": 16.21,
+      "masked_flicker_local": 13.37,
+      "masked_flicker_official": 20.17,
+      "note": "掩膜内闪烁本地低于官方；逐像素差异主要由双方不同的抖动实现主导。"
+    }
+  },
+
+  "track_B_bmx_bumps_pristine_anchor": {
+    "material": "官方 Quick Test 素材：samples/input/bmx-bumps_raw.mp4（真实 raw，854x480）+ bmx-bumps_mask.mp4（真实二值掩膜）。无量化、无掩膜反解，是本次检验的定量基准。",
+    "resolution": "320x180（缩到官方发布结果尺寸后比较）",
+    "frames": 81,
+    "official_vs_raw": {
+      "masked_change": 92.15,
+      "bg_change": 4.98,
+      "masked_flicker": 21.61,
+      "sharpness": 515.4
+    },
+    "local_720x1280_vs_raw": {
+      "masked_change": 91.59,
+      "bg_change": 4.66,
+      "masked_flicker": 22.97,
+      "vs_official_mean_abs_per_255": 3.92,
+      "sharpness": 652.0
+    },
+    "local_540x960_vs_raw": {
+      "masked_change": 94.52,
+      "bg_change": 4.48,
+      "masked_flicker": 22.52,
+      "vs_official_mean_abs_per_255": 4.79,
+      "sharpness": 550.9
+    },
+    "conclusion": "移除力度（92.2 vs 91.6/94.5）、背景保留（5.0 vs 4.7/4.5）、时序闪烁（21.6 vs 23.0/22.5）三项与官方一致；逐像素差仅 3.9~4.8/255；本地锐度不低于官方（652/551 vs 515）。"
+  },
+
+  "resolution_caveat": {
+    "finding": "Laplacian 方差跨分辨率不可比：把同一输入缩放到 480x270 / 960x544 / 1280x720，锐度读数依次为 5750 / 1302 / 653。",
+    "implication": "任何跨分辨率的锐度比较都是无效的；此前“提高 sample_size 改善细节”的假设不能在锐度指标上用跨分辨率读数验证。所有对照必须缩放到同一尺寸。"
+  },
+
+  "camel_4variant_archive": {
+    "note": "上一会话跑完但未归档的 dilation/分辨率对照，此处补录（vs 反解输入，480x270）。",
+    "dil0_native":   {"masked_change": 66.15, "bg_change": 20.17, "vs_official_mean_abs": 22.12, "sharpness": 828.7},
+    "dil6_native":   {"masked_change": 66.26, "bg_change": 20.62, "vs_official_mean_abs": 22.67, "sharpness": 827.8},
+    "dil6_ss960":    {"masked_change": 60.78, "bg_change": 16.93, "vs_official_mean_abs": 20.94, "sharpness": 611.1},
+    "dil6_ss1280":   {"masked_change": 60.20, "bg_change": 16.76, "vs_official_mean_abs": 20.39, "sharpness": 588.3},
+    "reading": "dilation 6 vs 0 差异极小；提高 sample_size 使 masked_change 下降，但这是分辨率改变导致的度量漂移，不能直接解读为质量差异。"
+  },
+
+  "artifacts": {
+    "camel_grid.png": "四联图 输入|掩膜|本地|官方（帧 0/12/24/36）",
+    "bmx_grid.png": "四联图 raw|掩膜|本地720x1280|官方（帧 0/27/54/80）",
+    "camel_local_vs_official.mp4": "并排对比（官方|本地，同量化口径）",
+    "bmx_local_vs_official.mp4": "并排对比（官方|本地），2x 放大",
+    "local_output/": "camel 4 组 dilation/分辨率原始输出",
+    "bmx_official/": "bmx 在 720x1280 与 540x960 的本地输出"
+  }
+}

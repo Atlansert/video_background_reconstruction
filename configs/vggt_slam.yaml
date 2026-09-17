@@ -218,9 +218,8 @@ video_completion:
     fill_ema_alpha: 0.75
     # 仅当 composite_source=false 时生效的墙地稳定权重（透传开启时不需要）
     wall_ema_alpha: 0.45
-    # 跨窗噪声对齐（实验后关闭）：双窗 A/B 实测重叠区差异 9.03→10.03（变差），
-    # 证明不匹配主导因素是 VACE 条件上下文不同而非初始噪声；代码保留备用
-    noise_alignment: false
+    # 跨窗噪声对齐经双窗 A/B 证伪（重叠区差异 9.03→10.03 变差，主导因素是
+    # VACE 条件上下文而非初始噪声），相关代码已移除，external/svor 保持官方原版
     # 时序平滑关闭：维持原始生成的时序特性（RAFT 光流中值对扩散填充收益
     # 甚微且引入边界扰动；如填充闪烁明显可改回 enabled: true）
     temporal_smooth:

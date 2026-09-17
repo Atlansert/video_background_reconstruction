@@ -295,40 +295,6 @@ class SVORAdapter:
             chunk_inputs.append((start, end, chunk_input, chunk_mask, chunk_dir))
         return chunk_inputs
 
-    def _prepare_global_noise(self, work_root, padded_total, frames_size, environment, seed):
-        """Deterministic full-video latent noise for overlap-consistent sampling.
-
-        Drawn once (CPU randn, fixed seed, in the SVOR env so the generator
-        algorithm matches the consumer) and sliced per window; overlapping
-        frames of adjacent windows then share their initial noise instead of
-        being re-imagined. Requires window starts to be multiples of 4 so the
-        latent time grid aligns across windows.
-        """
-        noise_path = work_root / "global_noise.pt"
-        if noise_path.exists():
-            return noise_path
-        sample_size = self.cfg.get("sample_size", "540,960")
-        budget_h, budget_w = (int(x) for x in str(sample_size).split(","))
-        aspect = frames_size[1] / frames_size[0]
-        max_area = budget_h * budget_w
-        gen_h = (round(np.sqrt(max_area * aspect)) + 15) // 16 * 16
-        gen_w = (round(np.sqrt(max_area / aspect)) + 15) // 16 * 16
-        t_global = (padded_total - 1) // 4 + 1
-        script = (
-            "import torch;"
-            f"g = torch.Generator(device='cpu').manual_seed({int(seed)});"
-            f"noise = torch.randn([1, 16, {t_global}, {gen_h // 8}, {gen_w // 8}],"
-            "generator=g, dtype=torch.float32).to(torch.bfloat16);"
-            f"torch.save(noise, r'{noise_path}')"
-        )
-        result = subprocess.run(
-            ["conda", "run", "-n", environment, "python", "-c", script],
-            cwd=self.project_root, capture_output=True, text=True,
-        )
-        if result.returncode or not noise_path.exists():
-            raise RuntimeError(f"global noise generation failed: {result.stderr[-500:]}")
-        return noise_path
-
     def run(self, video_path, frames_dir, masks_dir, output_path, fps):
         repo = self.project_root / self.cfg.get("repo_dir", "external/svor")
         script = repo / "predict_SVOR.py"
@@ -374,16 +340,6 @@ class SVORAdapter:
         env["PYTHONUNBUFFERED"] = "1"
         environment_name = self.cfg.get("environment", "svor")
         sample_size = self.cfg.get("sample_size", "540,960")
-        noise_path = None
-        if self.cfg.get("noise_alignment", True):
-            try:
-                noise_path = self._prepare_global_noise(
-                    work_root, len(frames), frames[0].shape[:2][::-1],
-                    environment_name, self.cfg.get("seed", 43),
-                )
-            except RuntimeError as error:
-                print(f"noise alignment disabled: {error}")
-                noise_path = None
         chunk_outputs = []
         for chunk_index, (start, end, chunk_input, chunk_mask, chunk_dir) in enumerate(
             chunk_inputs
@@ -408,13 +364,6 @@ class SVORAdapter:
                 "--dilation", str(self.cfg.get("dilation", 0)),
                 "--weight_dtype", self.cfg.get("weight_dtype", "bfloat16"),
             ]
-            # overlap-consistent noise: only valid when the window's first
-            # frame lands on the global latent grid (start % 4 == 0)
-            if noise_path is not None and start % 4 == 0:
-                command += [
-                    "--noise_file", str(noise_path),
-                    "--noise_offset", str(start // 4),
-                ]
             log_path = Path(output_path).parent / "logs" / f"svor_chunk_{chunk_index:03d}.log"
             log_path.parent.mkdir(parents=True, exist_ok=True)
             with log_path.open("w", encoding="utf-8") as log:

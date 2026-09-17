@@ -2,16 +2,36 @@
   "task": "检验本地 SVOR（external/svor + Wan2.1-VACE-1.3B + 两阶段 remove LoRA）的效果",
   "date": "2026-09-17",
   "gpu": "CUDA_VISIBLE_DEVICES=4（7 号卡被另一会话占用，未互相干扰）",
-  "verdict": "【2026-09-17 修正】初版结论“本地与官方一致”错误。经用户目视反馈复核：camel 上本地输出确实变差——误删掩膜外的背景骆驼并引入阴影。根因是本次验证直接调用 predict_SVOR.py，绕过了项目自带的 composite_source 透传后处理。补上后处理后：未遮挡结构保留 99.9%（raw 仅 77.3%）、阴影像素归零（raw 16.3%）、掩膜内移除力度保持 64.7（官方 66.6）。此前“抖动量化造成偏软假象”的观察部分成立，但掩盖不了该真实缺陷——在无抖动的 bmx 素材上同样测到结构丢失（raw 保留 83.4%）。",
-  "root_cause": {
-    "mechanism": "SVOR 整帧重生成，掩膜外真实结构（背景骆驼、墙地纹理）被重画并丢细节",
-    "why_it_showed_here": "本次 camel 验证直接调 predict_SVOR.py，未走 vbr/models/svor.py::_composite_source（configs/vggt_slam.yaml -> video_completion.svor.composite_source: true）",
-    "fix_verified": {
-      "unmasked_structure_kept": {"official": 0.972, "local_raw": 0.773, "local_with_composite": 0.999},
-      "shadow_pixel_fraction": {"official": 0.0877, "local_raw": 0.1627, "local_with_composite": 0.0},
-      "removal_strength_inside_mask": {"official": 66.60, "local_raw": 66.26, "local_with_composite": 64.70}
+  "verdict": "【2026-09-17 第三次复核，最终】代码与权重均为官方原版（全量 diff 仅 2 处未启用的可选改动；LoRA md5 与备份一致）。本地 SVOR 的 raw 输出行为正确（在掩膜有无的帧上一致移除目标，时序指标优于/接近官方）。用户两次目视反馈均属实：① raw 输出确实在掩膜外丢结构、引阴影；② 我上一版建议的 composite_source 逐帧融合反而更差（闪烁+边缘），原因是 maskdrop0.5 有 50% 帧整帧丢掩膜，逐帧 2D 融合会把源像素贴回造成物体忽现忽隐。正确修法是时序并集掩膜（对应论文 MUSE），实测闪烁 30.9->17.3、边界梯度 104.7->67.9。该缺陷不影响项目正式产物（真实掩膜 0 空帧、翻转率 1.2%，逐帧合成安全；正式产物掩膜外相邻帧变化 3.05、边界 6.12，无闪烁）。",
+
+  "code_and_weights_verification": {
+    "method": "官方 tarball(/tmp/svor.tar.gz, 2026-05-20) 解包后 diff -rq 全量递归比对",
+    "only_differences": [
+      "predict_SVOR.py: 新增 --noise_file/--noise_offset（默认 None，本次未启用）",
+      "videox_fun/pipeline/pipeline_SVOR.py: 仅 latents is None 分支（未传入时不触发）"
+    ],
+    "weights": "LoRA remove_model_stage1/2.safetensors md5 与 checkpoints/svor/ 完全一致；基座为官方 HF 原始格式 Wan2.1-VACE-1.3B",
+    "conclusion": "推理走官方默认代码路径，权重与官方一致；问题不在代码/权重"
+  },
+
+  "flicker_and_edge_mechanism": {
+    "trigger": "maskdrop0.5 是缺陷掩膜基准：24/48 帧掩膜被整帧丢弃（帧序 .MM..MMM.MM....M.M..MM.MMMM..MM.MM）",
+    "mechanism": "composite_source 为逐帧 2D 融合 out=src*(1-alpha)+gen*alpha，alpha 取自当前帧掩膜；空掩膜帧 alpha≈0 把源像素(含目标)贴回，有掩膜帧 alpha≈1 目标已消失 -> 目标忽现忽隐；羽化 alpha 边界表现为边缘接缝",
+    "metrics_camel_480x270": {
+      "object_region_change_empty_mask_frames": {"official": 25.7, "local_raw": 37.3, "per_frame_composite": 16.9, "union_composite": 33.1},
+      "object_region_change_masked_frames": {"official": 29.8, "local_raw": 40.4, "per_frame_composite": 32.9, "union_composite": 36.2},
+      "frame_flicker_overall": {"official": 16.74, "local_raw": 15.43, "per_frame_composite": 24.44, "union_composite": 17.06},
+      "flicker_on_mask_toggle": {"official": 16.81, "local_raw": 15.63, "per_frame_composite": 30.88, "union_composite": 17.28},
+      "mask_edge_band_gradient": {"official": 81.25, "local_raw": 63.53, "per_frame_composite": 104.71, "union_composite": 67.86}
     },
-    "not_camel_specific": "官方干净素材 bmx-bumps 上，本地 raw 同样只保留 83.4% 未遮挡结构（无抖动干扰下测得）"
+    "proper_fix": "时序并集掩膜（窗口内任一帧被掩膜的像素都视为移除），对应论文 MUSE（Mask Union for Stable Erasure）"
+  },
+
+  "impact_on_real_pipeline": {
+    "real_mask_stats": {"dir": "outputs/001_sam31_slam/masks_inpaint", "frames": 1799, "empty_frames": 0, "coverage_range": [0.1305, 0.6718], "adjacent_flip_rate": 0.0124},
+    "camel_mask_stats": {"empty_frames": "24/48", "coverage_range": [0, 0.17]},
+    "real_deliverable_adjacent_frame_change": {"inside_mask": 2.022, "outside_mask": 3.051, "mask_edge_ring": 6.116},
+    "conclusion": "项目正式产物 background_video.mp4（含 composite_source）无闪烁；camel 现象是“逐帧合成 x 时序不连贯掩膜”的组合产物"
   },
 
   "track_A_camel_maskdrop0.5": {

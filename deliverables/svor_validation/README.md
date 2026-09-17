@@ -65,25 +65,8 @@ bmx 只有 14/81 空掩膜帧，闪烁幅度本就小。）
 
 ## 视频对比（GitHub 可直接播放）
 
-| 文件 | 内容 |
-| --- | --- |
-| `camel_maskdrop_fix_compare.mp4` | **四段对比：官方 \| 本地 raw \| 逐帧 composite（差）\| 时序并集 composite（好）** — 建议先看这个 |
-| `camel_official_vs_local_composited.mp4` | 三段：官方 \| 本地 raw \| 本地+逐帧 composite（**问题版**，闪烁/边缘可见） |
-| `camel_local_vs_official.mp4` | 两段：官方 \| 本地 raw（未加任何透传后处理） |
-| `bmx_local_vs_official.mp4` | 官方 \| 本地 720,1280（干净素材，320×180，2x 放大） |
-
-> 保留问题版视频作为复现记录；修复效果请看 `camel_maskdrop_fix_compare.mp4` 的第四段。
-
-## 四联图
-
-`figures/camel_maskdrop_fix.png`：每行 5 列 = 源输入 \| 官方 \| 本地 raw \| 逐帧 composite \| 时序并集 composite，
-行为帧 0/12/24/36 —— 最能看清闪烁与边缘问题的成因和正确修法。
-
-`figures/camel_fix_grid.png`：每行 5 列 = 源输入 \| 掩膜 \| 官方 \| 本地 raw \| 本地 + composite（逐帧）。
-
-`figures/camel_grid.png`：每行 4 列 = 输入 \| 掩膜 \| 本地 \| 官方，行为帧 0/12/24/36。
-
-`figures/bmx_grid.png`：每行 4 列 = raw \| 掩膜 \| 本地 720×1280 \| 官方，行为帧 0/27/54/80。
+见本文件顶部"最终对比视频"。图：`figures/FINAL_camel_grid.png`
+（每行 3 列 = 官方 \| 本地最终结果，行为帧 0/12/24/36）。
 
 ## 定量结果（关键指标）
 

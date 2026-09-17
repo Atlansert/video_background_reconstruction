@@ -3,7 +3,6 @@
   "date": "2026-09-17",
   "gpu": "CUDA_VISIBLE_DEVICES=4（7 号卡被另一会话占用，未互相干扰）",
   "verdict": "【2026-09-17 第三次复核，最终】代码与权重均为官方原版（全量 diff 仅 2 处未启用的可选改动；LoRA md5 与备份一致）。本地 SVOR 的 raw 输出行为正确（在掩膜有无的帧上一致移除目标，时序指标优于/接近官方）。用户两次目视反馈均属实：① raw 输出确实在掩膜外丢结构、引阴影；② 我上一版建议的 composite_source 逐帧融合反而更差（闪烁+边缘），原因是 maskdrop0.5 有 50% 帧整帧丢掩膜，逐帧 2D 融合会把源像素贴回造成物体忽现忽隐。正确修法是时序并集掩膜（对应论文 MUSE），实测闪烁 30.9->17.3、边界梯度 104.7->67.9。该缺陷不影响项目正式产物（真实掩膜 0 空帧、翻转率 1.2%，逐帧合成安全；正式产物掩膜外相邻帧变化 3.05、边界 6.12，无闪烁）。",
-
   "code_and_weights_verification": {
     "method": "官方 tarball(/tmp/svor.tar.gz, 2026-05-20) 解包后 diff -rq 全量递归比对",
     "only_differences": [
@@ -13,34 +12,114 @@
     "weights": "LoRA remove_model_stage1/2.safetensors md5 与 checkpoints/svor/ 完全一致；基座为官方 HF 原始格式 Wan2.1-VACE-1.3B",
     "conclusion": "推理走官方默认代码路径，权重与官方一致；问题不在代码/权重"
   },
-
   "flicker_and_edge_mechanism": {
     "root_cause": "掩膜口径不一致：模型内部用时序并集(interpolate_MUSE 每4帧最大池化,videox_fun/utils/utils.py,调用点 pipeline_SVOR.py:320)，而 vbr/models/svor.py::_composite_source 合成时用逐帧原始掩膜。二者冲突 -> 空掩膜帧把目标贴回 -> 闪烁+边缘",
     "trigger": "maskdrop0.5 是缺陷掩膜基准：24/48 帧掩膜被整帧丢弃（帧序 .MM..MMM.MM....M.M..MM.MMMM..MM.MM）",
     "official_muse_code": "videox_fun/utils/utils.py::interpolate_MUSE: grouped_frames.view(bs,c,(depth-1)//4,4,h,w); torch.max(grouped_frames,dim=3)[0]",
     "final_metric_table_camel_480x270_48f": {
-      "_columns": ["structure_kept", "shadow_signed", "flicker", "flicker_on_toggle", "edge_band", "obj_empty", "obj_masked"],
-      "official":         [0.973, -3.72, 17.59, 16.81, 81.25, 25.7, 29.8],
-      "local_raw":        [0.773, -5.56, 16.29, 15.63, 63.53, 37.3, 40.4],
-      "local_per_frame_composite": [1.000, 0.00, 22.91, 30.88, 104.71, 16.9, 32.9],
-      "local_union_composite_FINAL": [0.938, 1.03, 18.64, 17.28, 67.86, 33.1, 36.2]
+      "_columns": [
+        "structure_kept",
+        "shadow_signed",
+        "flicker",
+        "flicker_on_toggle",
+        "edge_band",
+        "obj_empty",
+        "obj_masked"
+      ],
+      "official": [
+        0.973,
+        -3.72,
+        17.59,
+        16.81,
+        81.25,
+        25.7,
+        29.8
+      ],
+      "local_raw": [
+        0.773,
+        -5.56,
+        16.29,
+        15.63,
+        63.53,
+        37.3,
+        40.4
+      ],
+      "local_per_frame_composite": [
+        1.0,
+        0.0,
+        22.91,
+        30.88,
+        104.71,
+        16.9,
+        32.9
+      ],
+      "local_union_composite_FINAL": [
+        0.938,
+        1.03,
+        18.64,
+        17.28,
+        67.86,
+        33.1,
+        36.2
+      ]
     },
     "final_metric_table_bmx_native_854x480_81f": {
-      "_columns": ["structure_kept", "shadow_signed", "flicker", "flicker_on_toggle", "edge_band"],
-      "local_raw": [0.842, -3.45, 19.57, 24.74, 47.36],
-      "local_per_frame_composite": [0.998, 0.00, 21.17, 25.16, 81.55],
-      "local_union_composite_FINAL": [0.936, -1.34, 20.30, 24.94, 49.51]
+      "_columns": [
+        "structure_kept",
+        "shadow_signed",
+        "flicker",
+        "flicker_on_toggle",
+        "edge_band"
+      ],
+      "local_raw": [
+        0.842,
+        -3.45,
+        19.57,
+        24.74,
+        47.36
+      ],
+      "local_per_frame_composite": [
+        0.998,
+        0.0,
+        21.17,
+        25.16,
+        81.55
+      ],
+      "local_union_composite_FINAL": [
+        0.936,
+        -1.34,
+        20.3,
+        24.94,
+        49.51
+      ]
     },
     "proper_fix": "合成侧改用时序并集掩膜（与模型内部 MUSE 口径一致）；实测闪烁 30.88->17.28、边界 104.71->67.86"
   },
-
   "impact_on_real_pipeline": {
-    "real_mask_stats": {"dir": "outputs/001_sam31_slam/masks_inpaint", "frames": 1799, "empty_frames": 0, "coverage_range": [0.1305, 0.6718], "adjacent_flip_rate": 0.0124},
-    "camel_mask_stats": {"empty_frames": "24/48", "coverage_range": [0, 0.17]},
-    "real_deliverable_adjacent_frame_change": {"inside_mask": 2.022, "outside_mask": 3.051, "mask_edge_ring": 6.116},
+    "real_mask_stats": {
+      "dir": "outputs/001_sam31_slam/masks_inpaint",
+      "frames": 1799,
+      "empty_frames": 0,
+      "coverage_range": [
+        0.1305,
+        0.6718
+      ],
+      "adjacent_flip_rate": 0.0124
+    },
+    "camel_mask_stats": {
+      "empty_frames": "24/48",
+      "coverage_range": [
+        0,
+        0.17
+      ]
+    },
+    "real_deliverable_adjacent_frame_change": {
+      "inside_mask": 2.022,
+      "outside_mask": 3.051,
+      "mask_edge_ring": 6.116
+    },
     "conclusion": "项目正式产物 background_video.mp4（含 composite_source）无闪烁；camel 现象是“逐帧合成 x 时序不连贯掩膜”的组合产物"
   },
-
   "track_A_camel_maskdrop0.5": {
     "material_caveat": "输入与官方结果都是 256 色调色板 GIF（R/G 各 8 级、B 仅 4 级），且输入是从“50% 纯绿叠加预览图”反解而来。注意：复原输入的掩膜外像素并不与 gif 逐像素相等（差异 16.2），掩膜与 gif 绿区 IoU 仅 0.462，因此 camel 的定量结论应以 bmx 干净素材为准。",
     "resolution": "480x270",
@@ -71,7 +150,11 @@
       },
       "reconciliation_vs_non_quantized_camel": {
         "source": "external/svor/docs/assets/videos/{input_maskdrop0.5,result_maskdrop0.5}/camel.mp4（320x180，无 GIF 量化）",
-        "sharpness_320x180": {"docs_input": 1531.7, "docs_official_result": 1378.5, "local_output": 1090.0},
+        "sharpness_320x180": {
+          "docs_input": 1531.7,
+          "docs_official_result": 1378.5,
+          "local_output": 1090.0
+        },
         "note": "换用无量化参照后，本地与官方的锐度差距从 GIF 口径下的 5~6 倍收敛到约 21%（1090 vs 1378.5）。残余差距与“本地按 480x272 生成再缩到 320x180、官方按原生分辨率生成”有关，属正常方法差异，且非 gif 抖动。逐像素差 11.05/255 因官方 docs 为 81 帧而 gif 系列为 48 帧，帧索引未严格时间对齐，仅作趋势参考。"
       }
     },
@@ -84,7 +167,6 @@
       "note": "掩膜内闪烁本地低于官方；逐像素差异主要由双方不同的抖动实现主导。"
     }
   },
-
   "track_B_bmx_bumps_pristine_anchor": {
     "material": "官方 Quick Test 素材：samples/input/bmx-bumps_raw.mp4（真实 raw，854x480）+ bmx-bumps_mask.mp4（真实二值掩膜）。无量化、无掩膜反解，是本次检验的定量基准。",
     "resolution": "320x180（缩到官方发布结果尺寸后比较）",
@@ -112,31 +194,52 @@
     "conclusion": "移除力度（92.2 vs 91.6/94.5）、背景保留（5.0 vs 4.7/4.5）、时序闪烁（21.6 vs 23.0/22.5）三项与官方一致。但【修正】初版“本地锐度不低于官方/逐像素差 3.9~4.8”的结论建立在 320x180 大幅降采样上，掩盖了未遮挡结构丢失：原生 854x480 重测显示本地 raw 仅保留 83.4% 未遮挡结构，补上 composite_source 后恢复 99.8%。即 bmx 同样存在该缺陷，并非 camel 独有。",
     "native_854x480_structure": {
       "note": "本次核心发现，需与上面的降采样指标分开看",
-      "unmasked_structure_kept": {"local_raw": 0.834, "local_with_composite": 0.998},
-      "removal_strength_inside_mask": {"local_raw": 90.41, "local_with_composite": 85.59}
+      "unmasked_structure_kept": {
+        "local_raw": 0.834,
+        "local_with_composite": 0.998
+      },
+      "removal_strength_inside_mask": {
+        "local_raw": 90.41,
+        "local_with_composite": 85.59
+      }
     }
   },
-
   "resolution_caveat": {
     "finding": "Laplacian 方差跨分辨率不可比：把同一输入缩放到 480x270 / 960x544 / 1280x720，锐度读数依次为 5750 / 1302 / 653。",
     "implication": "任何跨分辨率的锐度比较都是无效的；此前“提高 sample_size 改善细节”的假设不能在锐度指标上用跨分辨率读数验证。所有对照必须缩放到同一尺寸。"
   },
-
   "camel_4variant_archive": {
     "note": "上一会话跑完但未归档的 dilation/分辨率对照，此处补录（vs 反解输入，480x270）。",
-    "dil0_native":   {"masked_change": 66.15, "bg_change": 20.17, "vs_official_mean_abs": 22.12, "sharpness": 828.7},
-    "dil6_native":   {"masked_change": 66.26, "bg_change": 20.62, "vs_official_mean_abs": 22.67, "sharpness": 827.8},
-    "dil6_ss960":    {"masked_change": 60.78, "bg_change": 16.93, "vs_official_mean_abs": 20.94, "sharpness": 611.1},
-    "dil6_ss1280":   {"masked_change": 60.20, "bg_change": 16.76, "vs_official_mean_abs": 20.39, "sharpness": 588.3},
+    "dil0_native": {
+      "masked_change": 66.15,
+      "bg_change": 20.17,
+      "vs_official_mean_abs": 22.12,
+      "sharpness": 828.7
+    },
+    "dil6_native": {
+      "masked_change": 66.26,
+      "bg_change": 20.62,
+      "vs_official_mean_abs": 22.67,
+      "sharpness": 827.8
+    },
+    "dil6_ss960": {
+      "masked_change": 60.78,
+      "bg_change": 16.93,
+      "vs_official_mean_abs": 20.94,
+      "sharpness": 611.1
+    },
+    "dil6_ss1280": {
+      "masked_change": 60.2,
+      "bg_change": 16.76,
+      "vs_official_mean_abs": 20.39,
+      "sharpness": 588.3
+    },
     "reading": "dilation 6 vs 0 差异极小；提高 sample_size 使 masked_change 下降，但这是分辨率改变导致的度量漂移，不能直接解读为质量差异。"
   },
-
   "artifacts": {
-    "camel_grid.png": "四联图 输入|掩膜|本地|官方（帧 0/12/24/36）",
-    "bmx_grid.png": "四联图 raw|掩膜|本地720x1280|官方（帧 0/27/54/80）",
-    "camel_local_vs_official.mp4": "并排对比（官方|本地，同量化口径）",
-    "bmx_local_vs_official.mp4": "并排对比（官方|本地），2x 放大",
-    "local_output/": "camel 4 组 dilation/分辨率原始输出",
-    "bmx_official/": "bmx 在 720x1280 与 540x960 的本地输出"
+    "FINAL_camel_2panel.mp4": "官方 | 本地最终结果（camel/maskdrop0.5，960x270）",
+    "FINAL_bmx_2panel.mp4": "官方 | 本地最终结果（bmx-bumps 干净素材，1708x480）",
+    "figures/FINAL_camel_grid.png": "三列 官方|本地最终结果，帧 0/12/24/36",
+    "final_report.json": "本文件（完整指标与结论）"
   }
 }

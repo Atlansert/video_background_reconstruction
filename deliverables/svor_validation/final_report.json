@@ -2,10 +2,20 @@
   "task": "检验本地 SVOR（external/svor + Wan2.1-VACE-1.3B + 两阶段 remove LoRA）的效果",
   "date": "2026-09-17",
   "gpu": "CUDA_VISIBLE_DEVICES=4（7 号卡被另一会话占用，未互相干扰）",
-  "verdict": "本地 SVOR 与官方一致。camel 示例上观察到的“本地偏软”是 GIF 抖动量化造成的测量假象，不是模型问题；在官方干净素材 bmx-bumps 上本地与官方逐像素差仅 3.9~4.8/255。",
+  "verdict": "【2026-09-17 修正】初版结论“本地与官方一致”错误。经用户目视反馈复核：camel 上本地输出确实变差——误删掩膜外的背景骆驼并引入阴影。根因是本次验证直接调用 predict_SVOR.py，绕过了项目自带的 composite_source 透传后处理。补上后处理后：未遮挡结构保留 99.9%（raw 仅 77.3%）、阴影像素归零（raw 16.3%）、掩膜内移除力度保持 64.7（官方 66.6）。此前“抖动量化造成偏软假象”的观察部分成立，但掩盖不了该真实缺陷——在无抖动的 bmx 素材上同样测到结构丢失（raw 保留 83.4%）。",
+  "root_cause": {
+    "mechanism": "SVOR 整帧重生成，掩膜外真实结构（背景骆驼、墙地纹理）被重画并丢细节",
+    "why_it_showed_here": "本次 camel 验证直接调 predict_SVOR.py，未走 vbr/models/svor.py::_composite_source（configs/vggt_slam.yaml -> video_completion.svor.composite_source: true）",
+    "fix_verified": {
+      "unmasked_structure_kept": {"official": 0.972, "local_raw": 0.773, "local_with_composite": 0.999},
+      "shadow_pixel_fraction": {"official": 0.0877, "local_raw": 0.1627, "local_with_composite": 0.0},
+      "removal_strength_inside_mask": {"official": 66.60, "local_raw": 66.26, "local_with_composite": 64.70}
+    },
+    "not_camel_specific": "官方干净素材 bmx-bumps 上，本地 raw 同样只保留 83.4% 未遮挡结构（无抖动干扰下测得）"
+  },
 
   "track_A_camel_maskdrop0.5": {
-    "material_caveat": "输入与官方结果都是 256 色调色板 GIF（R/G 各 8 级、B 仅 4 级），且输入是从“50% 纯绿叠加预览图”反解而来。任何离开同一量化口径的像素级指标都会被量化噪声主导。",
+    "material_caveat": "输入与官方结果都是 256 色调色板 GIF（R/G 各 8 级、B 仅 4 级），且输入是从“50% 纯绿叠加预览图”反解而来。注意：复原输入的掩膜外像素并不与 gif 逐像素相等（差异 16.2），掩膜与 gif 绿区 IoU 仅 0.462，因此 camel 的定量结论应以 bmx 干净素材为准。",
     "resolution": "480x270",
     "frames": 48,
     "sharpness_laplacian_variance": {
@@ -72,7 +82,12 @@
       "vs_official_mean_abs_per_255": 4.79,
       "sharpness": 550.9
     },
-    "conclusion": "移除力度（92.2 vs 91.6/94.5）、背景保留（5.0 vs 4.7/4.5）、时序闪烁（21.6 vs 23.0/22.5）三项与官方一致；逐像素差仅 3.9~4.8/255；本地锐度不低于官方（652/551 vs 515）。"
+    "conclusion": "移除力度（92.2 vs 91.6/94.5）、背景保留（5.0 vs 4.7/4.5）、时序闪烁（21.6 vs 23.0/22.5）三项与官方一致。但【修正】初版“本地锐度不低于官方/逐像素差 3.9~4.8”的结论建立在 320x180 大幅降采样上，掩盖了未遮挡结构丢失：原生 854x480 重测显示本地 raw 仅保留 83.4% 未遮挡结构，补上 composite_source 后恢复 99.8%。即 bmx 同样存在该缺陷，并非 camel 独有。",
+    "native_854x480_structure": {
+      "note": "本次核心发现，需与上面的降采样指标分开看",
+      "unmasked_structure_kept": {"local_raw": 0.834, "local_with_composite": 0.998},
+      "removal_strength_inside_mask": {"local_raw": 90.41, "local_with_composite": 85.59}
+    }
   },
 
   "resolution_caveat": {

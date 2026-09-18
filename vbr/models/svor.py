@@ -184,7 +184,8 @@ class SVORAdapter:
         if process.wait() != 0:
             raise RuntimeError(f"composite encode failed, see {output_path}")
 
-    def _flow_ema(self, input_video, masks, output_path, fps, total, alpha_keep, outside_alpha=0.0):
+    def _flow_ema(self, input_video, masks, output_path, fps, total, alpha_keep, outside_alpha=0.0,
+                  adaptive=False, adaptive_tau=12.0):
         """Causal flow-propagated stabilizer.
 
         Each frame is blended with the previous stabilized frame warped along
@@ -193,6 +194,13 @@ class SVORAdapter:
         every frame (the main source of visible jumps); `outside_alpha`
         (used when there is no composite pass) lightly stabilizes the
         regenerated walls/floors as well, damping their pattern crawl.
+
+        With ``adaptive=True`` the blend weight is scaled per pixel by the
+        flow-prediction residual: where the warp already predicts the current
+        frame well (residual low) the generated detail is kept as-is, and the
+        EMA only bites where the fill flaps. That preserves fill sharpness
+        (EMA blurs everything when applied uniformly) while still removing
+        the flicker, at the cost of a slightly noisier residual estimate.
         """
         frames = _read_video_frames(input_video)
         height, width = frames[0].shape[:2]
@@ -234,6 +242,14 @@ class SVORAdapter:
             fill = cv2.dilate((mask > 0).astype(np.uint8), kernel) > 0
             alpha = np.full((height, width), float(outside_alpha), np.float32)
             alpha[fill] = alpha_keep
+            if adaptive:
+                # how badly does the flow-warped previous frame predict this one?
+                residual = cv2.absdiff(
+                    cur, np.clip(warped, 0, 255).astype(np.uint8)
+                ).astype(np.float32).mean(axis=2)
+                residual = cv2.GaussianBlur(residual, (0, 0), 3.0)
+                gate = 1.0 - np.exp(-residual / max(1e-6, adaptive_tau))
+                alpha = alpha * gate.astype(np.float32)
             alpha = cv2.GaussianBlur(alpha, (7, 7), 2.5)[:, :, None]
             stabilized = cur.astype(np.float32) * (1.0 - alpha) + warped * alpha
             process.stdin.write(np.clip(stabilized, 0, 255).astype(np.uint8).tobytes())

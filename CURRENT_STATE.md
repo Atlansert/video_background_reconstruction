@@ -108,7 +108,7 @@
 ### 环境
 
 - 三个 conda 环境**不可合并**：`vbr`（主流程/几何）、`vbr-seg`（SAM3.1/SAM2/ProPainter/RAFT）、`vbr-slam`（VGGT-SLAM）
-- GPU：7 号卡空闲可跑（0–3 被 vLLM 长期占用；4/5/6 可用）
+- GPU：**优先使用 7 号卡**（用户指定；0–3 被 vLLM 长期占用，4/5/6 可用但不优先）。所有推理/重建任务默认 `CUDA_VISIBLE_DEVICES=7`，除非 7 号卡被占用才退到 4/5/6。
 - 权重全部离线：`checkpoints/`（sam3.1/sam2/vggt/salad/dinov2）+ `external/ProPainter/weights/`
 - `python -m vbr.cli doctor --config configs/vggt_slam.yaml`：环境/权重/ffmpeg 自检（13 项）
 

@@ -1,10 +1,10 @@
 {
   "frames_sampled": 60,
   "stride": 30,
-  "residue_mean": 59.24807777404785,
-  "residue_p90": 71.45629348754883,
-  "residual_structure_mean": 41.73672790527344,
-  "flicker_ratio_mean": 0.9045930904749538,
+  "residue_mean": 60.251547749837236,
+  "residue_p90": 71.70332641601563,
+  "residual_structure_mean": 41.52510445912679,
+  "flicker_ratio_mean": 0.8778059752874047,
   "flicker_ratio_p90": 1.2218860889944052,
   "basis": {
     "residue_flicker_masks": "masks",
@@ -17,20 +17,20 @@
         "start": 1500,
         "end": 1652,
         "frames_sampled": 31,
-        "mean": 0.10107109360441638,
-        "max": 0.2373090345094998
+        "mean": 0.09750217131347973,
+        "max": 0.21726997651157703
       },
       {
         "start": 1652,
         "end": 1799,
         "frames_sampled": 29,
-        "mean": 0.19331839506932588,
-        "max": 0.3651591959711904
+        "mean": 0.04019600893397794,
+        "max": 0.059589647982661
       }
     ],
-    "in_window_mean": 0.14565728931245597,
-    "outside_mean": 0.0547312217946092,
-    "overall_mean": 0.069885566380917
+    "in_window_mean": 0.06980419283005387,
+    "outside_mean": 0.054731593396148664,
+    "overall_mean": 0.05724369330179954
   },
   "glitch": {
     "frames_checked": 59,

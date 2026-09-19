@@ -55,6 +55,8 @@ class SLAMAdapter:
             str(self.cfg.get("pixel_stride", 2)),
             "--voxel-size",
             str(self.cfg.get("voxel_size", 0.025)),
+            "--metric-room-height",
+            str(self.cfg.get("metric_room_height", 2.6)),
         ]
         if module == "vbr.vggt_direct":
             command += ["--max-frames", str(self.cfg.get("max_frames", 32))]

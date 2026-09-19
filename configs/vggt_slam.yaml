@@ -141,18 +141,26 @@ slam:
   cuda_visible_devices: '7'
   checkpoint: checkpoints/vggt/model.pt
   max_frames: 32
-  confidence_percentile: 35
+  # 0 = 关闭输出侧置信度过滤（官方 main.py 输出不过滤；solver 内部 conf_threshold 25 仍生效）。
+  # 之前的 35 会砍掉最需要的三类低纹理点：白墙、天花板、玻璃门板。
+  confidence_percentile: 0
   pixel_stride: 1
-  voxel_size: 0.025
+  # 0 = 跳过输出降采样与统计离群剔除（官方级稠密点云）。之前 0.025 在错误的
+  # 相对尺度世界里等效 ~6cm 体素，3100 万点被压到 4 万，几何阶段只能拿到噪点。
+  voxel_size: 0
+  # VGGT 深度是相对的，合并世界尺度随机（实测"房高"0.33-1.13 单位）；几何阶段的
+  # 阈值（平面 0.04 / TSDF 体素 0.03 / 墙宽 0.3）都按米设计。用重力轴范围把世界
+  # 归一化到近似公制（点云、深度、外参平移同乘一个因子）。0 关闭。
+  metric_room_height: 2.6
   # vggt_slam backend options (used when backend: vggt_slam)
   frame_stride: 4
   max_keyframes: 240
   submap_size: 16
   overlap_size: 1
-  min_disparity: 35
+  min_disparity: 50      # 官方默认 50；35 会选入视差不足的关键帧，深度噪声拉低 submap 尺度估计
   conf_threshold: 25
   lc_thres: 0.95
-  model_mode: square
+  model_mode: crop        # 官方上游默认：宽 518 保比例；square letterbox 压水平分辨率
   mask_aware_matching: true
   max_loops: 1
   salad_checkpoint: checkpoints/salad/dino_salad.ckpt

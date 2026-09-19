@@ -201,6 +201,16 @@ def main() -> None:
     parser.add_argument("--pixel-stride", type=int, default=2)
     parser.add_argument("--voxel-size", type=float, default=0.025)
     parser.add_argument(
+        "--metric-room-height",
+        type=float,
+        default=2.6,
+        help="Rescale the merged world so its gravity-axis extent (p98-p2 of "
+        "the points) equals this many meters; 0 disables. VGGT depth is "
+        "relative while every geometry-stage threshold (plane 0.04, TSDF "
+        "voxel 0.03, ...) assumes meters, so a ~2.6 m room-height anchor "
+        "keeps them meaningful.",
+    )
+    parser.add_argument(
         "--model-mode",
         choices=["square", "crop"],
         default="square",
@@ -486,11 +496,35 @@ def main() -> None:
 
     points = np.concatenate(points_parts, axis=0)
     colors = np.concatenate(color_parts, axis=0)
+
+    # VGGT depth is relative per submap; the merged world ends up at an
+    # arbitrary scale (observed room heights 0.33-1.13 units for a ~2.6 m
+    # room). Anchor it to meters via the gravity-axis extent so the geometry
+    # stage's metric thresholds apply. Scaling points, depths and camera
+    # translations by one factor keeps depth/extrinsics consistent.
+    scale_factor = 1.0
+    world_height = None
+    if args.metric_room_height > 0 and len(points):
+        from vbr.geometry import estimate_gravity
+
+        gravity = estimate_gravity(extrinsics)
+        low, high = np.percentile(points @ gravity, [2.0, 98.0])
+        world_height = float(high - low)
+        if world_height > 1e-6:
+            scale_factor = float(args.metric_room_height) / world_height
+            points = points * scale_factor
+            depth *= np.float32(scale_factor)
+            extrinsics = extrinsics.copy()
+            extrinsics[:, :3, 3] *= scale_factor
+
     cloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points.astype(np.float64)))
     cloud.colors = o3d.utility.Vector3dVector(colors.astype(np.float64) / 255.0)
-    cloud = cloud.voxel_down_sample(args.voxel_size)
-    if len(cloud.points) >= 1000:
-        cloud, _ = cloud.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.5)
+    if args.voxel_size > 0:
+        # voxel_size <= 0 keeps the official dense output (no downsample,
+        # no statistical outlier removal) for the geometry stage.
+        cloud = cloud.voxel_down_sample(args.voxel_size)
+        if len(cloud.points) >= 1000:
+            cloud, _ = cloud.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.5)
 
     output = Path(args.output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -541,6 +575,8 @@ def main() -> None:
         "foreground_points_rejected": rejected_foreground_points,
         "raw_background_points": raw_background_points,
         "output_points": len(cloud.points),
+        "metric_scale_factor": scale_factor,
+        "world_height_before_metric": world_height,
         "model_space": [model_height, model_width],
         "pointcloud": str(output),
         "reconstruction": str(output.with_suffix(".npz")),

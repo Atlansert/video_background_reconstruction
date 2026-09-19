@@ -44,8 +44,15 @@ def fit_planes(points, gravity, threshold=0.05, min_points=500, max_planes=12):
     import open3d as o3d
 
     points = np.asarray(points, dtype=np.float64)
-    cloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points))
-    remaining = np.arange(len(points))
+    # Dense clouds (official-style, ~10M pts) only need a subset for RANSAC;
+    # keep the mapping so returned indices still address the full cloud.
+    max_ransac_points = 2_000_000
+    if len(points) > max_ransac_points:
+        sample = np.sort(np.random.default_rng(0).choice(len(points), max_ransac_points, replace=False))
+    else:
+        sample = np.arange(len(points))
+    cloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points[sample]))
+    remaining = np.arange(len(sample))
     planes = []
     for _ in range(max_planes):
         if len(remaining) < min_points:
@@ -59,7 +66,7 @@ def fit_planes(points, gravity, threshold=0.05, min_points=500, max_planes=12):
         normal /= np.linalg.norm(normal) + 1e-12
         alignment = abs(float(np.dot(normal, gravity)))
         kind = "horizontal" if alignment >= 0.75 else "vertical" if alignment <= 0.3 else "other"
-        global_indices = remaining[np.asarray(local_indices, dtype=int)]
+        global_indices = sample[remaining[np.asarray(local_indices, dtype=int)]]
         planes.append(
             {
                 "normal": normal,

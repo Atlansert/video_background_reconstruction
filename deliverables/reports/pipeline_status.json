@@ -325,13 +325,19 @@
     "video": {
       "state": "complete",
       "method": "svor",
-      "chunks": 41,
-      "chunk_frames": 77,
-      "overlap": 33,
+      "chunks": 44,
+      "chunk_frames": 81,
+      "overlap": 41,
+      "sample_size": "540,960",
+      "num_inference_steps": 20,
+      "guidance_scale": 6.0,
+      "seed": 43,
+      "dilation": 6,
+      "mask_dilation": 0,
+      "composite_source": true,
       "fade_frames": 16,
       "fill_ema_alpha": 0.75,
-      "wall_ema_alpha": 0.45,
-      "note": "Video produced by running SVORAdapter directly after mask repairs; pipeline status reconciled manually."
+      "note": "官方配置接入运行（2026-09-18）：external/svor 为 GitHub 官方原版（工作区干净），推理参数全部对齐官方默认（video_length 81 / steps 20 / guidance 6.0 / seed 43 / dilation 6 / bfloat16 / full_load），仅 sample_size 保持 540,960（匹配输入 960x540，避免二次缩放）。GPU 7。"
     }
   },
   "geometry_redepth": {

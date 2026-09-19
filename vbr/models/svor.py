@@ -320,7 +320,9 @@ class SVORAdapter:
             chunk_inputs.append((start, end, chunk_input, chunk_mask, chunk_dir))
         return chunk_inputs
 
-    def run(self, video_path, frames_dir, masks_dir, output_path, fps):
+    def _predict_chunk(self, chunk_index, chunk_input, chunk_mask, chunk_dir,
+                       fps_arg, start, end, logs_dir):
+        """Run official predict_SVOR.py for one chunk; return the output path."""
         repo = self.project_root / self.cfg.get("repo_dir", "external/svor")
         script = repo / "predict_SVOR.py"
         model_name = self.cfg.get("model_name", "models/Wan2.1-VACE-1.3B")
@@ -331,88 +333,52 @@ class SVORAdapter:
                 "models/remove_model_stage2.safetensors",
             ],
         )
-        required = [script] + [repo / lora for lora in lora_paths] + [repo / model_name]
-        for path in required:
+        for path in [script] + [repo / lora for lora in lora_paths] + [repo / model_name]:
             if not path.exists():
                 raise FileNotFoundError(path)
-
-        work_root = Path(output_path).parent / "svor"
-        work_root.mkdir(parents=True, exist_ok=True)
-        probe = cv2.VideoCapture(str(video_path))
-        size = (int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)), int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-        capture_fps = probe.get(cv2.CAP_PROP_FPS)
-        probe.release()
-        fps_value = fps if fps else capture_fps
-        frames, masks, _ = self._synthesize_inputs(frames_dir, masks_dir)
-        total = len(frames)
-        dilation_px = int(self.cfg.get("mask_dilation", 0))
-        masks = dilate_masks(masks, dilation_px)
-        pad = (4 - (total - 1) % 4) % 4  # pad the tail so the last chunk stays VAE-aligned
-        if pad:
-            frames += [frames[-1]] * pad
-            masks += [masks[-1]] * pad
-        ranges = list(
-            svor_chunk_ranges(
-                len(frames),
-                int(self.cfg.get("chunk_frames", 77)),
-                int(self.cfg.get("overlap", 20)),
-            )
-        )
-        chunk_inputs = self._chunk_inputs(work_root, frames, masks, fps_value, ranges)
-
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = str(self.cfg.get("cuda_visible_devices", "7"))
         env["PYTHONUNBUFFERED"] = "1"
-        environment_name = self.cfg.get("environment", "svor")
-        sample_size = self.cfg.get("sample_size", "540,960")
-        chunk_outputs = []
-        for chunk_index, (start, end, chunk_input, chunk_mask, chunk_dir) in enumerate(
-            chunk_inputs
-        ):
-            save_dir = chunk_dir / "out"
-            command = [
-                "conda", "run", "--no-capture-output", "-n", environment_name,
-                "python", "predict_SVOR.py",
-                "--input_video", str(chunk_input.resolve()),
-                "--input_mask_video", str(chunk_mask.resolve()),
-                "--save_dir", str(save_dir.resolve()),
-                "--model_name", model_name,
-                "--lora_path",
-            ] + [str(repo / lora) for lora in lora_paths] + [
-                "--sample_size", sample_size,
-                "--video_length", str(end - start),
-                "--fps", str(int(round(float(fps)))),  # predict_SVOR.py takes --fps as int
-                "--num_inference_steps", str(self.cfg.get("num_inference_steps", 20)),
-                "--gpu_memory_mode", self.cfg.get("gpu_memory_mode", "model_full_load"),
-                "--guidance_scale", str(self.cfg.get("guidance_scale", 6.0)),
-                "--seed", str(self.cfg.get("seed", 43)),
-                "--dilation", str(self.cfg.get("dilation", 0)),
-                "--weight_dtype", self.cfg.get("weight_dtype", "bfloat16"),
-            ]
-            log_path = Path(output_path).parent / "logs" / f"svor_chunk_{chunk_index:03d}.log"
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            with log_path.open("w", encoding="utf-8") as log:
-                result = subprocess.run(
-                    command, cwd=repo, env=env, stdout=log, stderr=subprocess.STDOUT, text=True
-                )
-            if result.returncode:
-                tail = "\n".join(log_path.read_text(encoding="utf-8").splitlines()[-40:])
-                raise RuntimeError(
-                    f"SVOR chunk {chunk_index} failed ({result.returncode}); see {log_path}\n{tail}"
-                )
-            produced = save_dir / chunk_input.name
-            if not produced.exists() or produced.stat().st_size == 0:
-                raise RuntimeError(f"SVOR did not create {produced}")
-            chunk_outputs.append((start, end, produced))
+        command = [
+            "conda", "run", "--no-capture-output", "-n",
+            self.cfg.get("environment", "svor"),
+            "python", "predict_SVOR.py",
+            "--input_video", str(chunk_input.resolve()),
+            "--input_mask_video", str(chunk_mask.resolve()),
+            "--save_dir", str((chunk_dir / "out").resolve()),
+            "--model_name", model_name,
+            "--lora_path",
+        ] + [str(repo / lora) for lora in lora_paths] + [
+            "--sample_size", self.cfg.get("sample_size", "540,960"),
+            "--video_length", str(end - start),
+            "--fps", str(int(round(float(fps_arg)))),  # predict_SVOR.py takes --fps as int
+            "--num_inference_steps", str(self.cfg.get("num_inference_steps", 20)),
+            "--gpu_memory_mode", self.cfg.get("gpu_memory_mode", "model_full_load"),
+            "--guidance_scale", str(self.cfg.get("guidance_scale", 6.0)),
+            "--seed", str(self.cfg.get("seed", 43)),
+            "--dilation", str(self.cfg.get("dilation", 0)),
+            "--weight_dtype", self.cfg.get("weight_dtype", "bfloat16"),
+        ]
+        log_path = logs_dir / f"svor_chunk_{chunk_index:03d}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("w", encoding="utf-8") as log:
+            result = subprocess.run(
+                command, cwd=repo, env=env, stdout=log, stderr=subprocess.STDOUT, text=True
+            )
+        if result.returncode:
+            tail = "\n".join(log_path.read_text(encoding="utf-8").splitlines()[-40:])
+            raise RuntimeError(
+                f"SVOR chunk {chunk_index} failed ({result.returncode}); see {log_path}\n{tail}"
+            )
+        produced = chunk_dir / "out" / chunk_input.name
+        if not produced.exists() or produced.stat().st_size == 0:
+            raise RuntimeError(f"SVOR did not create {produced}")
+        return produced
 
-        raw_output = work_root / "combined.mp4"
-        stitched = blend_stitch(
-            chunk_outputs, raw_output, fps_value,
-            fade_frames=int(self.cfg.get("fade_frames", 12)),
-        )
-        if stitched != len(frames):
-            raise RuntimeError(f"Stitched {stitched} frames, expected {len(frames)}")
-
+    def _finalize(self, raw_output, output_path, video_path, frames, masks,
+                  total, fps_value, size, chunks, masks_dir):
+        """Stitch-EMA-composite-encode pipeline tail shared by full and partial runs."""
+        work_root = raw_output.parent
         processed = raw_output
         # Stabilize the RAW generation first: EMA over the composited video
         # would drag real object-edge pixels (from outside the previous
@@ -434,8 +400,9 @@ class SVORAdapter:
             self._composite_source(processed, frames, masks, composited, fps_value, total)
             processed = composited
         if (self.cfg.get("temporal_smooth") or {}).get("enabled", False):
+            dilation_px = int(self.cfg.get("mask_dilation", 0))
             smoothed = work_root / "smoothed.mp4"
-            smooth_masks = masks_dir
+            smooth_masks = Path(masks_dir)
             if dilation_px > 0:
                 # keep smooth and composite on the same grown masks
                 smooth_masks = work_root / "masks_dilated"
@@ -464,11 +431,11 @@ class SVORAdapter:
         subprocess.run(encode, cwd=self.project_root, check=True)
         report = {
             "method": "svor",
-            "environment": environment_name,
-            "chunks": len(ranges),
+            "environment": self.cfg.get("environment", "svor"),
+            "chunks": chunks,
             "chunk_frames": int(self.cfg.get("chunk_frames", 77)),
             "overlap": int(self.cfg.get("overlap", 20)),
-            "sample_size": sample_size,
+            "sample_size": self.cfg.get("sample_size", "540,960"),
             "num_inference_steps": int(self.cfg.get("num_inference_steps", 20)),
             "output": str(output_path.resolve()),
             "raw_output": str(raw_output.resolve()),
@@ -477,3 +444,50 @@ class SVORAdapter:
             json.dumps(report, indent=2), encoding="utf-8"
         )
         return report
+
+    def run(self, video_path, frames_dir, masks_dir, output_path, fps):
+        work_root = Path(output_path).parent / "svor"
+        work_root.mkdir(parents=True, exist_ok=True)
+        probe = cv2.VideoCapture(str(video_path))
+        size = (int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)), int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        capture_fps = probe.get(cv2.CAP_PROP_FPS)
+        probe.release()
+        fps_value = fps if fps else capture_fps
+        frames, masks, _ = self._synthesize_inputs(frames_dir, masks_dir)
+        total = len(frames)
+        dilation_px = int(self.cfg.get("mask_dilation", 0))
+        masks = dilate_masks(masks, dilation_px)
+        pad = (4 - (total - 1) % 4) % 4  # pad the tail so the last chunk stays VAE-aligned
+        if pad:
+            frames += [frames[-1]] * pad
+            masks += [masks[-1]] * pad
+        ranges = list(
+            svor_chunk_ranges(
+                len(frames),
+                int(self.cfg.get("chunk_frames", 77)),
+                int(self.cfg.get("overlap", 20)),
+            )
+        )
+        chunk_inputs = self._chunk_inputs(work_root, frames, masks, fps_value, ranges)
+
+        logs_dir = Path(output_path).parent / "logs"
+        chunk_outputs = []
+        for chunk_index, (start, end, chunk_input, chunk_mask, chunk_dir) in enumerate(
+            chunk_inputs
+        ):
+            produced = self._predict_chunk(
+                chunk_index, chunk_input, chunk_mask, chunk_dir, fps, start, end, logs_dir
+            )
+            chunk_outputs.append((start, end, produced))
+
+        raw_output = work_root / "combined.mp4"
+        stitched = blend_stitch(
+            chunk_outputs, raw_output, fps_value,
+            fade_frames=int(self.cfg.get("fade_frames", 12)),
+        )
+        if stitched != len(frames):
+            raise RuntimeError(f"Stitched {stitched} frames, expected {len(frames)}")
+        return self._finalize(
+            raw_output, output_path, video_path, frames, masks,
+            total, fps_value, size, len(ranges), masks_dir,
+        )

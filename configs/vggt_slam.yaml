@@ -168,7 +168,9 @@ slam:
 geometry:
   carve_openings: true
   opening_prompts: [door, window, staircase, stairs]
-  voxel_size: 0.03
+  # TSDF 体素：0.03→0.02（世界已做公制锚定，0.02 是真实的 2cm）；
+  # 表面顶点约翻倍，细节改善明显，配合 tsdf_trunc 0.15→0.10 收紧融合带宽。
+  voxel_size: 0.02
   plane_distance_threshold: 0.04
   min_plane_points: 1000
   max_planes: 12
@@ -178,11 +180,11 @@ geometry:
   footprint_wall_fallback: true
   poisson_depth: 8
   mesh_max_points: 150000
-  mesh_target_triangles: 250000
+  mesh_target_triangles: 450000
   mesh_min_component_triangles: 100
   mesh_fill_hole_max_edges: 60
   use_tsdf: true
-  tsdf_trunc: 0.15
+  tsdf_trunc: 0.10
   depth_trunc_quantile: 0.995
 video_completion:
   backend: svor                # propainter | svor（试验后端）

@@ -526,7 +526,37 @@ def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=No
             }
         )
 
-    if not walls and cfg.get("plan_wall_detection", True):
+    if cfg.get("wall_plan_fusion", True) and len(walls) < cfg.get("max_walls", 8):
+        # Plan-view line detection finds walls RANSAC misses (large walls are
+        # split by furniture/doorways, so segments stay below the 3D plane
+        # support); merge its findings with the RANSAC walls, skipping lines
+        # that coincide with an already-kept wall.
+        detected = fit_wall_lines(points, gravity, floor_level, ceiling_level, cfg)
+        color_band = max(
+            float(cfg.get("voxel_size", 0.03)) * 2,
+            cfg.get("wall_band_room_fraction", 0.15) * (floor_level - ceiling_level),
+        )
+        for wall in detected:
+            if len(walls) >= cfg.get("max_walls", 8):
+                break
+            duplicate = False
+            for kept in walls:
+                alignment = abs(float(np.dot(wall["normal"], kept["normal"])))
+                if alignment > np.cos(np.radians(12.0)) and abs(
+                    wall["offset"] - kept["offset"]
+                ) < color_band:
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+            nearby = np.abs(points @ wall["normal"] - wall["offset"]) <= color_band
+            color = np.median(colors[nearby], axis=0) if np.any(nearby) else np.median(colors, axis=0)
+            wall["color"] = color
+            walls.append(wall)
+        if detected:
+            wall_source = "plan_ransac" if wall_source != "ransac" else "ransac+plan"
+
+    elif not walls and cfg.get("plan_wall_detection", True):
         detected = fit_wall_lines(points, gravity, floor_level, ceiling_level, cfg)
         color_band = max(
             float(cfg.get("voxel_size", 0.03)) * 2,
@@ -863,6 +893,9 @@ def fill_small_boundary_holes(mesh, max_loop_edges=60):
     closed_loops = [loop for loop in loops if len(loop) <= max_loop_edges]
     original_vertices = np.asarray(mesh.vertices).copy()
     original_faces = np.asarray(mesh.triangles)
+    original_colors = (
+        np.asarray(mesh.vertex_colors).copy() if mesh.has_vertex_colors() else None
+    )
     patch_faces = []
     for loop in closed_loops:
         vertices = original_vertices[loop]
@@ -892,6 +925,10 @@ def fill_small_boundary_holes(mesh, max_loop_edges=60):
             o3d.utility.Vector3dVector(original_vertices),
             o3d.utility.Vector3iVector(all_faces),
         )
+        # The manual rebuild drops everything but vertices/faces; carry the
+        # TSDF vertex colors over so the GLB keeps its appearance.
+        if original_colors is not None and len(original_colors) == len(original_vertices):
+            mesh.vertex_colors = o3d.utility.Vector3dVector(original_colors)
         mesh.remove_duplicated_vertices()
         mesh.remove_degenerate_triangles()
         mesh.compute_vertex_normals()
@@ -927,10 +964,17 @@ def clean_mesh(mesh, cfg):
         triangles = np.asarray(mesh.triangles)
         mask = np.asarray([cluster in keep for cluster in clusters])
         if mask.any():
-            mesh = o3d.geometry.TriangleMesh(
-                o3d.utility.Vector3dVector(np.asarray(mesh.vertices)),
-                o3d.utility.Vector3iVector(triangles[mask]),
-            )
+            # Keyword args keep vertex colors through the manual rebuild; the
+            # positional form synthesizes an uncolored mesh (observed: the
+            # TSDF colors were lost here, GLB came out gray).
+            subset = o3d.geometry.TriangleMesh()
+            subset.vertices = o3d.utility.Vector3dVector(np.asarray(mesh.vertices))
+            subset.triangles = o3d.utility.Vector3iVector(triangles[mask])
+            if mesh.has_vertex_colors():
+                subset.vertex_colors = o3d.utility.Vector3dVector(
+                    np.asarray(mesh.vertex_colors)
+                )
+            mesh = subset
             mesh.remove_duplicated_vertices()
             mesh.remove_degenerate_triangles()
         stats["largest_fraction"] = largest / max(1, int(triangle_count))

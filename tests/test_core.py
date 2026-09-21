@@ -380,6 +380,121 @@ class GeometryTests(unittest.TestCase):
             on_plane = np.isclose(vertices[:, 1], level, atol=1e-6).sum()
             self.assertGreaterEqual(on_plane, 4, f"{name} quad missing")
 
+    def test_subdivision_shares_midpoints_between_neighbors(self):
+        """Adjacent triangles must share the midpoint of their common edge.
+
+        One midpoint per triangle leaves T-junctions and split vertex normals;
+        textured priors rendered with a faceted/checkered moire pattern.
+        """
+        import open3d as o3d
+
+        from vbr.geometry import subdivide_long_edges
+
+        quad = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(
+                np.asarray([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0],
+                            [4.0, 0.0, 4.0], [0.0, 0.0, 4.0]])
+            ),
+            o3d.utility.Vector3iVector(np.asarray([[0, 1, 2], [0, 2, 3]])),
+        )
+        subdivided = subdivide_long_edges(quad, max_edge_length=1.0)
+        positions = np.asarray(subdivided.vertices)
+        unique = np.unique(np.round(positions, 6), axis=0)
+        self.assertEqual(len(positions), len(unique))
+        # Area is preserved and every vertex normal agrees (planar, shared).
+        area = o3d.geometry.TriangleMesh.get_surface_area(subdivided)
+        self.assertAlmostEqual(area, 16.0, places=4)
+        subdivided.compute_vertex_normals()
+        normals = np.asarray(subdivided.vertex_normals)
+        self.assertTrue(np.allclose(normals[:, 1], normals[0, 1], atol=1e-6))
+
+    def test_prune_drops_coplanar_surface_triangles(self):
+        """TSDF triangles hugging a prior plane are removed, others kept."""
+        import open3d as o3d
+
+        from vbr.geometry import _prune_surface_against_priors
+
+        # Two horizontal quads: one at the prior plane y=0, one 0.5 m below.
+        def slab(y):
+            return o3d.geometry.TriangleMesh(
+                o3d.utility.Vector3dVector(
+                    np.asarray([[0.0, y, 0.0], [2.0, y, 0.0],
+                                [2.0, y, 2.0], [0.0, y, 2.0]])
+                ),
+                o3d.utility.Vector3iVector(np.asarray([[0, 1, 2], [0, 2, 3]])),
+            )
+
+        surface = slab(0.0) + slab(0.5)
+        prior = {
+            "normal": [0.0, 1.0, 0.0],
+            "offset": 0.0,
+            "axes": ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            "extent": (-1.0, 3.0, -1.0, 3.0),
+        }
+        pruned, dropped = _prune_surface_against_priors(
+            surface, [prior], {"texture_prune_band_m": 0.06}
+        )
+        self.assertEqual(dropped, 2)
+        self.assertEqual(len(np.asarray(pruned.triangles)), 2)
+        kept_heights = np.asarray(pruned.vertices)[:, 1]
+        self.assertAlmostEqual(float(np.median(kept_heights)), 0.5, places=4)
+
+    def test_texture_projection_samples_and_caps_frames(self):
+        """Projection colors vertices from video frames, keyframes only."""
+        import open3d as o3d
+
+        from vbr.geometry import texture_mesh_from_frames
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frame_dir = root / "frames"
+            frame_dir.mkdir()
+            for index in (0, 10):
+                cv2.imwrite(
+                    str(frame_dir / f"{index:06d}.jpg"),
+                    np.full((8, 8, 3), (0, 0, 255), dtype=np.uint8),  # red
+                )
+            # Reconstruction over one keyframe: identity-ish pose looking
+            # down -z, 8x8 frames, no foreground, valid depth 2.0 everywhere.
+            extrinsics = np.zeros((1, 3, 4), dtype=np.float64)
+            extrinsics[0][:3, :3] = np.eye(3)
+            intrinsics = np.zeros((1, 3, 3), dtype=np.float64)
+            intrinsics[0] = [[4.0, 0.0, 4.0], [0.0, 4.0, 4.0], [0.0, 0.0, 1.0]]
+            np.savez(
+                root / "recon.npz",
+                extrinsics=extrinsics,
+                intrinsics=intrinsics,
+                depth=np.full((1, 8, 8, 1), 2.0, dtype=np.float32),
+                confidence=np.full((1, 8, 8), 1.0, dtype=np.float32),
+                confidence_cutoff=np.float32(0.5),
+                frame_paths=np.asarray([str(frame_dir / "000000.jpg")]),
+                frame_ids=np.asarray([0], dtype=np.int32),
+                original_coords=np.asarray([[0.0, 0.0, 8.0, 8.0, 8.0, 8.0]]),
+                foreground_masks=np.zeros((1, 8, 8), dtype=bool),
+            )
+            mesh = o3d.geometry.TriangleMesh(
+                o3d.utility.Vector3dVector(
+                    np.asarray([[-0.1, -0.1, 2.0], [0.1, -0.1, 2.0],
+                                [0.0, 0.1, 2.0]])
+                ),
+                o3d.utility.Vector3iVector(np.asarray([[0, 1, 2]])),
+            )
+            mesh.vertex_colors = o3d.utility.Vector3dVector(
+                np.full((3, 3), 0.5)
+            )
+            textured, report = texture_mesh_from_frames(
+                mesh,
+                root / "recon.npz",
+                sorted(frame_dir.glob("*.jpg")),
+            )
+        # The pose exists only for frame id 0 (frame 10 has none and is
+        # filtered before the cap), and red pixels paint the vertices.
+        self.assertEqual(report["frames_used"], 1)
+        self.assertEqual(report["textured"], 3)
+        colors = np.asarray(textured.vertex_colors)
+        self.assertTrue(np.all(colors[:, 0] > 0.9))   # red channel high
+        self.assertTrue(np.all(colors[:, 2] < 0.1))
+
 
 class MaskTests(unittest.TestCase):
     def test_original_mask_is_padded_into_model_space(self):

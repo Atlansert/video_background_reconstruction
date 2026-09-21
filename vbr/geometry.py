@@ -154,12 +154,20 @@ def fit_wall_lines(points, gravity, floor_level, ceiling_level, cfg):
     ):
         duplicate = False
         for kept in accepted:
-            angle = abs(float(np.dot(normal_2d, kept["normal_2d"])))
-            if angle > np.cos(np.radians(8.0)) and abs(offset - kept["offset"]) < threshold:
+            # Signed alignment, so anti-parallel normals are handled
+            # explicitly. The previous version took abs() first and then
+            # tested `angle < -cos(8°)`, which can never fire, so
+            # anti-parallel duplicates of one wall were kept (observed:
+            # three near-coincident duplicate pairs).
+            alignment = float(np.dot(normal_2d, kept["normal_2d"]))
+            if alignment > np.cos(np.radians(8.0)) and abs(
+                offset - kept["offset"]
+            ) < threshold:
                 duplicate = True
                 break
-            # Same line, opposite normal sign.
-            if angle < -np.cos(np.radians(8.0)) and abs(offset + kept["offset"]) < threshold:
+            if alignment < -np.cos(np.radians(8.0)) and abs(
+                offset + kept["offset"]
+            ) < threshold:
                 duplicate = True
                 break
         if duplicate:
@@ -206,6 +214,67 @@ def fit_wall_lines(points, gravity, floor_level, ceiling_level, cfg):
             }
         )
     return walls
+
+
+def _extend_wall_extents(walls, gravity, room_height, cfg, camera_centers=None):
+    """Close wall corners and reach the camera footprint.
+
+    3D-RANSAC wall extents come from inlier quantiles, so foreground masks
+    cut them short wherever furniture stood and corners stay open (rendered
+    as holes between adjacent walls). Two evidence sources extend them:
+
+    - Adjacent wall lines intersect in the plan view; a wall may extend to
+      that corner when the required extension is plausible (< max_extension).
+    - The camera visits points inside the room, so a wall ending short of a
+      camera's tangent coordinate must continue behind the occluders.
+
+    Extensions are capped by ``wall_corner_max_extension_room_fraction`` so a
+    legitimately short wall (ending at a doorway) cannot be stretched into a
+    different room section.
+    """
+    if not walls:
+        return
+    max_extension = float(
+        cfg.get("wall_corner_max_extension_room_fraction", 0.6)
+    ) * max(room_height, 1e-6)
+    axis_u, axis_v = _plan_axes(gravity)
+    lines = []
+    for wall in walls:
+        normal = np.asarray(wall["normal"], dtype=float)
+        lines.append(
+            (np.array([normal @ axis_u, normal @ axis_v]), float(wall["offset"]))
+        )
+
+    for index, wall in enumerate(walls):
+        normal = np.asarray(wall["normal"], dtype=float)
+        tangent = np.cross(gravity, normal)
+        tangent /= np.linalg.norm(tangent) + 1e-12
+        low, high = float(wall["low"]), float(wall["high"])
+        normal_i, offset_i = lines[index]
+        for other, (normal_j, offset_j) in enumerate(lines):
+            if other == index:
+                continue
+            if abs(float(normal_i @ normal_j)) > np.cos(np.radians(15.0)):
+                continue
+            matrix = np.stack([normal_i, normal_j])
+            if abs(float(np.linalg.det(matrix))) < 1e-6:
+                continue
+            point = np.linalg.solve(matrix, np.array([offset_i, offset_j]))
+            corner = axis_u * point[0] + axis_v * point[1]
+            corner_t = float(corner @ tangent)
+            if corner_t < low and low - corner_t <= max_extension:
+                low = corner_t
+            elif corner_t > high and corner_t - high <= max_extension:
+                high = corner_t
+        if camera_centers is not None and len(camera_centers):
+            camera_t = np.asarray(camera_centers, dtype=float) @ tangent
+            lowest = float(camera_t.min())
+            highest = float(camera_t.max())
+            if lowest < low and low - lowest <= max_extension:
+                low = lowest
+            if highest > high and highest - high <= max_extension:
+                high = highest
+        wall["low"], wall["high"] = float(low), float(high)
 
 
 def _quad(vertices, color):
@@ -460,7 +529,8 @@ def _emit_wall(
     return mesh, openings
 
 
-def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=None):
+def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=None,
+                          camera_centers=None):
     import open3d as o3d
 
     points = np.asarray(points, dtype=float)
@@ -476,6 +546,17 @@ def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=No
     u_values, v_values = points @ axis_u, points @ axis_v
     u_min, u_max = np.quantile(u_values, [0.01, 0.99])
     v_min, v_max = np.quantile(v_values, [0.01, 0.99])
+    # The camera walks through the room, so every camera center must lie
+    # under this floor / over this ceiling. Points behind occluders are
+    # missing where furniture stood, which used to leave the floor short of
+    # the camera path (visible as floor gaps right below the trajectory).
+    if camera_centers is not None and len(camera_centers):
+        camera_u = np.asarray(camera_centers, dtype=float) @ axis_u
+        camera_v = np.asarray(camera_centers, dtype=float) @ axis_v
+        u_min = min(u_min, float(np.quantile(camera_u, 0.01)))
+        u_max = max(u_max, float(np.quantile(camera_u, 0.99)))
+        v_min = min(v_min, float(np.quantile(camera_v, 0.01)))
+        v_max = max(v_max, float(np.quantile(camera_v, 0.99)))
 
     floor_color = np.median(colors[heights >= np.quantile(heights, 0.94)], axis=0)
     ceiling_color = np.median(colors[heights <= np.quantile(heights, 0.06)], axis=0)
@@ -610,6 +691,16 @@ def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=No
                     "color": color,
                 }
             )
+
+    # Close wall corners / reach the camera footprint before emitting, so
+    # walls meet at intersections instead of leaving corner holes.
+    _extend_wall_extents(
+        walls,
+        gravity,
+        float(floor_level - ceiling_level),
+        cfg,
+        camera_centers=camera_centers,
+    )
 
     wall_count = 0
     openings_total = 0
@@ -1005,6 +1096,12 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, openin
         with np.load(reconstruction_path) as data:
             extrinsics = data["extrinsics"]
     gravity = estimate_gravity(extrinsics)
+    camera_centers = None
+    if extrinsics is not None and len(extrinsics):
+        rotation = np.asarray(extrinsics)[:, :3, :3]
+        translation = np.asarray(extrinsics)[:, :3, 3]
+        # world_to_cam = [R | t]; the camera center in world is -R^T t.
+        camera_centers = -np.einsum("nji,nj->ni", rotation, translation)
     planes = fit_planes(
         points,
         gravity,
@@ -1013,7 +1110,8 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, openin
         max_planes=cfg.get("max_planes", 12),
     )
     structural, bounds = build_structural_mesh(
-        points, colors, planes, gravity, cfg, opening_hints=opening_hints
+        points, colors, planes, gravity, cfg, opening_hints=opening_hints,
+        camera_centers=camera_centers,
     )
     structural_path = output_dir / "structural_planes.ply"
     o3d.io.write_triangle_mesh(str(structural_path), structural)
@@ -1032,15 +1130,25 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, openin
     if surface is None:
         surface = build_poisson_mesh(points, colors, cfg)
 
+    # Clean (fragment filter + hole fill) and decimate ONLY the dense surface.
+    # The structural priors are a few large flat quads; running them through
+    # the small-component filter deletes them (< mesh_min_component_triangles)
+    # and quadric decimation eats their exact plane geometry. Appending them
+    # afterwards keeps floor/ceiling/walls exactly where the priors put them.
+    target_triangles = cfg.get("mesh_target_triangles", 250000)
+    if len(surface.triangles) > target_triangles:
+        surface = surface.simplify_quadric_decimation(target_triangles)
+    surface, mesh_clean = clean_mesh(surface, cfg)
+
     combined = surface + structural
     combined.remove_degenerate_triangles()
     combined.remove_duplicated_triangles()
     combined.remove_non_manifold_edges()
     combined.compute_vertex_normals()
-    combined, mesh_clean = clean_mesh(combined, cfg)
-    target_triangles = cfg.get("mesh_target_triangles", 250000)
-    if len(combined.triangles) > target_triangles:
-        combined = combined.simplify_quadric_decimation(target_triangles)
+    combined, prior_holes = fill_small_boundary_holes(
+        combined, max_loop_edges=int(cfg.get("mesh_fill_hole_max_edges", 60))
+    )
+    mesh_clean["holes_filled"] = int(mesh_clean.get("holes_filled", 0)) + prior_holes
     mesh_path = output_dir / "background_mesh.ply"
     if not o3d.io.write_triangle_mesh(str(mesh_path), combined, write_ascii=False):
         raise RuntimeError(f"Failed to write {mesh_path}")

@@ -225,6 +225,161 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(len(mesh.vertices), 8)
         self.assertEqual(len(mesh.triangles), 12)
 
+    def test_anti_parallel_duplicate_wall_is_rejected(self):
+        """One wall must appear once even if RANSAC reports both orientations.
+
+        The previous dedupe took abs() before testing the negative-alignment
+        branch, so a candidate whose normal pointed the other way from an
+        already-kept line was accepted again — observed on real data as three
+        near-coincident duplicate wall pairs.
+        """
+        from vbr.geometry import fit_wall_lines
+
+        rng = np.random.default_rng(3)
+        # One full-height wall at z = 0 (normal along +z) built from a dense
+        # mid-height band, plus a sparse floor/ceiling so the height quantiles
+        # span a room. Duplicate orientation emerges from RANSAC sampling.
+        wall = np.column_stack(
+            [
+                rng.uniform(-1.0, 1.0, 4000),
+                rng.uniform(0.2, 1.8, 4000),
+                rng.normal(0.0, 0.01, 4000),
+            ]
+        )
+        floor = np.column_stack(
+            [
+                rng.uniform(-1.0, 1.0, 500),
+                np.full(500, 2.0),
+                rng.uniform(-1.5, 1.5, 500),
+            ]
+        )
+        ceiling = floor.copy()
+        ceiling[:, 1] = 0.0
+        points = np.vstack([wall, floor, ceiling])
+        walls = fit_wall_lines(
+            points,
+            np.array([0.0, 1.0, 0.0]),
+            floor_level=2.0,
+            ceiling_level=0.0,
+            cfg={"wall_ransac_iterations": 200, "wall_ransac_seed": 11},
+        )
+        coincident = [
+            wall
+            for wall in walls
+            if abs(abs(float(wall["normal"][2])) - 1.0) < 0.2
+            and abs(abs(float(wall["offset"])) - 0.0) < 0.2
+        ]
+        self.assertLessEqual(len(coincident), 1, walls)
+
+    def test_corner_extension_closes_adjacent_walls(self):
+        """Two perpendicular walls whose inlier extents stop short of the
+        corner must extend to meet it, and extensions are capped."""
+        from vbr.geometry import _extend_wall_extents
+
+        gravity = np.array([0.0, 1.0, 0.0])
+        walls = [
+            {  # plane z=0, tangent +x, currently stops at x = -0.5
+                "normal": np.array([0.0, 0.0, 1.0]),
+                "offset": 0.0,
+                "low": -2.0,
+                "high": -0.5,
+            },
+            {  # plane x=0, tangent -z (t = -z), currently stops at t = 0.5
+                "normal": np.array([1.0, 0.0, 0.0]),
+                "offset": 0.0,
+                "low": 0.5,
+                "high": 2.0,
+            },
+        ]
+        _extend_wall_extents(
+            walls, gravity, room_height=2.0,
+            cfg={"wall_corner_max_extension_room_fraction": 0.6},
+        )
+        # Corner at the origin: wall0's high end reaches x = 0, wall1's low
+        # end reaches t = 0 (the corner lies on its line).
+        self.assertAlmostEqual(walls[0]["high"], 0.0, places=5)
+        self.assertAlmostEqual(walls[1]["low"], 0.0, places=5)
+        # Extension beyond the cap leaves the extent untouched.
+        far = [
+            {
+                "normal": np.array([0.0, 0.0, 1.0]),
+                "offset": 0.0,
+                "low": 5.0,
+                "high": 6.0,
+            },
+            {
+                "normal": np.array([1.0, 0.0, 0.0]),
+                "offset": 0.0,
+                "low": -6.0,
+                "high": -5.0,
+            },
+        ]
+        _extend_wall_extents(
+            far, gravity, room_height=2.0,
+            cfg={"wall_corner_max_extension_room_fraction": 0.6},
+        )
+        self.assertEqual(far[0]["low"], 5.0)
+        self.assertEqual(far[1]["low"], -6.0)
+
+    def test_camera_footprint_extends_wall_extent(self):
+        from vbr.geometry import _extend_wall_extents
+
+        gravity = np.array([0.0, 1.0, 0.0])
+        wall = {
+            "normal": np.array([0.0, 0.0, 1.0]),
+            "offset": 0.0,
+            "low": -1.0,
+            "high": 1.0,
+        }
+        # A camera further along the wall's tangent (+x) pulls the high end out,
+        # within the extension cap (0.6 * room_height = 1.2).
+        cameras = np.asarray([[2.0, 0.5, -0.5]])
+        _extend_wall_extents(
+            [wall], gravity, room_height=2.0,
+            cfg={"wall_corner_max_extension_room_fraction": 0.6},
+            camera_centers=cameras,
+        )
+        self.assertAlmostEqual(wall["high"], 2.0, places=5)
+
+    def test_structural_priors_survive_combined_mesh(self):
+        """Floor/ceiling/wall priors must reach the final mesh.
+
+        Regression: the assembled mesh (surface + structural) used to run
+        through clean_mesh, whose small-component filter deleted every prior
+        quad (2 triangles each) below mesh_min_component_triangles, and
+        quadric decimation flattened their plane geometry. Rendered views
+        showed 28% missing pixels as a result.
+        """
+        import open3d as o3d
+
+        from vbr.geometry import build_mesh
+
+        rng = np.random.default_rng(5)
+        # A shallow dome of points: TSDF/Poisson surface plus the priors.
+        x, z = np.meshgrid(np.linspace(-1.5, 1.5, 40), np.linspace(-1.5, 1.5, 40))
+        y = -0.4 * np.exp(-(x**2 + z**2))
+        points = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
+        colors = np.full_like(points, 0.6)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            report = build_mesh(
+                points,
+                colors,
+                output,
+                {"use_tsdf": False, "poisson_depth": 6,
+                 "mesh_min_component_triangles": 10,
+                 "footprint_wall_fallback": True},
+                reconstruction_path=None,
+            )
+            mesh = o3d.io.read_triangle_mesh(str(output / "background_mesh.ply"))
+        room = report["room"]
+        self.assertEqual(room["wall_source"], "robust_footprint_fallback")
+        vertices = np.asarray(mesh.vertices)
+        for name, level in (("floor", room["floor_level"]),
+                            ("ceiling", room["ceiling_level"])):
+            on_plane = np.isclose(vertices[:, 1], level, atol=1e-6).sum()
+            self.assertGreaterEqual(on_plane, 4, f"{name} quad missing")
+
 
 class MaskTests(unittest.TestCase):
     def test_original_mask_is_padded_into_model_space(self):

@@ -121,9 +121,18 @@ python -m tools.render_trajectory_video --run-dir outputs/geometry_prior_a \
 python -m tools.render_trajectory_video --run-dir outputs/001_sam31_slam \
     --npz outputs/001_sam31_slam/slam_bg/points_background.npz \
     --out outputs/001_sam31_slam/trajectory_video_redepth.mp4
+# 原片 VGGT-SLAM 基线（不去前景、家具保留）——必须用纯 TSDF 网格：
+# 结构先验面假定空房间，家具保留时会拟合出幽灵墙挡在相机前
+python -m tools.render_trajectory_video --run-dir outputs/vggt_slam_baseline \
+    --mesh outputs/vggt_slam_baseline/background_mesh_tsdf_decimated.ply \
+    --out outputs/vggt_slam_baseline/trajectory_video_raw_slam.mp4
 ```
 
-默认输出 960×540@29.97（对齐原片）、1799 帧 ≈ 60 秒、约 11 分钟/条（EGL 渲染约 2.5–3 fps）。`--stride 2` 可跳帧减半；`--no-audio` 不带音轨。已产出的两条视频（A/B）在 `outputs/geometry_prior_a/` 与 `outputs/geometry_hybrid_b/` 中，抽帧与原片逐帧对齐（走廊/梁/柱位置重合）。
+默认输出 960×540@29.97（对齐原片）、1799 帧 ≈ 60 秒、约 11 分钟/条（EGL 渲染约 2.5–3 fps）。`--stride 2` 可跳帧减半；`--no-audio` 不带音轨。
+
+高机位段注意：原片在 1450–1650 段为高举俯拍，SLAM 估计的相机轨迹会升到估算天花板之上，从房间外侧渲染只能看到背面（画面近黑）。工具默认 `--ceiling-clearance 0.35`（米）——读 `geometry_report.json` 的重力轴与天花板高度，把越界的相机沿重力滑到天花板下方；实测把该段黑占比从 68–82% 降到 ≤5%。`--ceiling-clearance 0` 可关闭、还原原始位姿。报告中的 `ceiling_clamped_frames` 记录被钳制的帧数。
+
+已产出的三条视频（基线/A/B）分别在 `outputs/vggt_slam_baseline/`、`outputs/geometry_prior_a/`、`outputs/geometry_hybrid_b/`；抽帧与原片逐帧对齐（走廊/梁/柱位置重合）。
 
 ## Outputs
 

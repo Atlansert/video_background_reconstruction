@@ -131,12 +131,14 @@ def main():
                         help="background RGB in 0-1, comma separated")
     parser.add_argument("--near", type=float, default=0.03)
     parser.add_argument("--far", type=float, default=80.0)
-    parser.add_argument("--ceiling-clearance", type=float, default=0.15,
+    parser.add_argument("--ceiling-clearance", type=float, default=0.35,
                         help="keep the camera this many meters below the "
                              "estimated ceiling along gravity. The SLAM poses "
                              "in some high-hold segments sit above the "
                              "estimated ceiling plane; rendering from outside "
-                             "shows backfaces (near-black frames). 0 disables.")
+                             "shows backfaces (near-black frames). The default "
+                             "clears the estimation error of both the ceiling "
+                             "level and the pose (~0.2m each); 0 disables.")
     parser.add_argument("--limit", type=int, default=0,
                         help="render only the first N output frames (smoke test)")
     args = parser.parse_args()

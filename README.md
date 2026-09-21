@@ -89,6 +89,25 @@ CUDA_VISIBLE_DEVICES=7 python -m vbr.cli run --config configs/default.yaml
 
 需要无条件重做分割时添加 `--force`。默认输入为 `video/001.mp4`。**生产配置为 `configs/vggt_slam.yaml`**（vggt_slam 后端，输出到 `outputs/001_sam31_slam/`）；`configs/default.yaml`（vggt_direct 后端）输出到 `outputs/001_sam31/`（该目录删除后会在运行时自动重建）。当前状态与常用命令见 `CURRENT_STATE.md`。
 
+### 轨迹漫游视频（几何验收）
+
+把重建网格按**原视频相机轨迹**渲染成视频：关键帧位姿（平移线性、旋转 slerp）插值为逐帧位姿，内参从模型空间换算到输出分辨率，EGL 离屏渲染后由 ffmpeg 编码 H.264 并带上原音轨。用于直接对照原片检查几何（墙的平直度、开口位置、地面完整性）：
+
+```bash
+# B 版（混合纹理）
+python -m tools.render_trajectory_video --run-dir outputs/geometry_hybrid_b \
+    --out outputs/geometry_hybrid_b/trajectory_video.mp4
+# A 版（原帧+先验）
+python -m tools.render_trajectory_video --run-dir outputs/geometry_prior_a \
+    --out outputs/geometry_prior_a/trajectory_video.mp4
+# 生产版（生成视频几何，redepth npz）
+python -m tools.render_trajectory_video --run-dir outputs/001_sam31_slam \
+    --npz outputs/001_sam31_slam/slam_bg/points_background.npz \
+    --out outputs/001_sam31_slam/trajectory_video_redepth.mp4
+```
+
+默认输出 960×540@29.97（对齐原片）、1799 帧 ≈ 60 秒、约 11 分钟/条（EGL 渲染约 2.5–3 fps）。`--stride 2` 可跳帧减半；`--no-audio` 不带音轨。已产出的两条视频（A/B）在 `outputs/geometry_prior_a/` 与 `outputs/geometry_hybrid_b/` 中，抽帧与原片逐帧对齐（走廊/梁/柱位置重合）。
+
 ## Outputs
 
 - `mask_overlay.mp4`：红色叠加的全帧前景掩码，用于质量验收。

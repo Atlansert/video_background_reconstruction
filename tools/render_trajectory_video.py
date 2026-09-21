@@ -6,6 +6,14 @@ H.264 with the original audio track. Positions interpolate linearly and
 rotations with slerp between consecutive keyframes; frames outside the
 keyframe range hold the nearest keyframe pose.
 
+High-hold segments caveat: SLAM's estimated camera path can rise above the
+estimated ceiling plane (the original video holds the camera overhead), and
+rendering from outside the room shows backfaces — near-black frames. The
+default ``--ceiling-clearance 0.15`` slides such cameras down along gravity to
+just below the ceiling, which restores the interior view; ``geometry_report.json``
+supplies the gravity axis and ceiling level. Set the option to 0 to render the
+raw poses.
+
 Usage (vbr environment), route B as an example:
     python -m tools.render_trajectory_video \
         --run-dir outputs/geometry_hybrid_b \
@@ -17,6 +25,13 @@ Route A / production differ only in the mesh + reconstruction NPZ paths:
     python -m tools.render_trajectory_video --run-dir outputs/001_sam31_slam \
         --npz outputs/001_sam31_slam/slam_bg/points_background.npz \
         --out outputs/001_sam31_slam/trajectory_video_redepth.mp4
+
+Raw VGGT-SLAM baseline (original frames, no foreground removal): render the
+TSDF-only surface, since the structural priors assume an empty room and would
+paint phantom walls where furniture used to be:
+    python -m tools.render_trajectory_video --run-dir outputs/vggt_slam_baseline \
+        --mesh outputs/vggt_slam_baseline/background_mesh_tsdf_decimated.ply \
+        --out outputs/vggt_slam_baseline/trajectory_video_raw_slam.mp4
 """
 
 from __future__ import annotations
@@ -116,6 +131,12 @@ def main():
                         help="background RGB in 0-1, comma separated")
     parser.add_argument("--near", type=float, default=0.03)
     parser.add_argument("--far", type=float, default=80.0)
+    parser.add_argument("--ceiling-clearance", type=float, default=0.15,
+                        help="keep the camera this many meters below the "
+                             "estimated ceiling along gravity. The SLAM poses "
+                             "in some high-hold segments sit above the "
+                             "estimated ceiling plane; rendering from outside "
+                             "shows backfaces (near-black frames). 0 disables.")
     parser.add_argument("--limit", type=int, default=0,
                         help="render only the first N output frames (smoke test)")
     args = parser.parse_args()
@@ -163,6 +184,30 @@ def main():
     positions, rotations, camera_intrinsics = interpolate_path(
         frame_ids, poses, intrinsics, frames
     )
+    ceiling_clamped = 0
+    if args.ceiling_clearance > 0:
+        report_path = run_dir / "geometry_report.json" if run_dir else None
+        if report_path is not None and report_path.exists():
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            gravity = np.asarray(report["gravity_down"], dtype=np.float64)
+            ceiling_level = float(report["room"]["ceiling_level"])
+            clearance = float(args.ceiling_clearance)
+            heights = positions @ gravity
+            # gravity points down: smaller height = higher up. A camera above
+            # the ceiling sees the mesh from outside (backfaces = black).
+            too_high = heights < ceiling_level + clearance
+            if too_high.any():
+                # Slide those cameras along gravity to the target height;
+                # moving by (target - h) * gravity lands exactly at target.
+                correction = (ceiling_level + clearance - heights[too_high])
+                positions[too_high] += correction[:, None] * gravity[None]
+                ceiling_clamped = int(too_high.sum())
+            print(
+                f"ceiling clamp: {ceiling_clamped} frames below "
+                f"{ceiling_level + clearance:.2f} (ceiling {ceiling_level:.2f})"
+            )
+        else:
+            print("ceiling clamp skipped: no geometry_report.json to read levels")
     out_fps = fps / stride
     print(
         f"mesh={mesh_path} keyframes={len(frame_ids)} output_frames={len(frames)} "
@@ -258,6 +303,7 @@ def main():
                 "seconds": float(len(frames) / out_fps),
                 "render_elapsed_seconds": elapsed,
                 "audio": bool(encode_audio),
+                "ceiling_clamped_frames": ceiling_clamped,
             },
             indent=2,
         ),

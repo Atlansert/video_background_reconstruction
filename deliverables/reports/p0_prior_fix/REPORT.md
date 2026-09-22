@@ -68,7 +68,8 @@
 | `walkthrough_before_priors_deleted.mp4` | 修复前（先验被删）漫游 |
 | `walkthrough_control_priors_stripped.mp4` | 控制组（同网格、剥掉先验） |
 | `walkthrough_after_priors_present.mp4` | 修复后（先验完整）漫游 |
-| `p0_diff_stats_isolated.json` | 控制实验原始指标 |
+| `p0_diff_stats_before_vs_after.json` | 修复前 vs 修复后的原始指标（含网格细分差异，非纯先验效应） |
+| `p0_diff_stats_isolated.json` | 控制实验原始指标（仅先验面为唯一变量） |
 
 三版漫游均由 `tools/render_trajectory_video.py` 从同一 SLAM 位姿渲染
 （960×540@29.97，1799 帧，`--no-audio`）。

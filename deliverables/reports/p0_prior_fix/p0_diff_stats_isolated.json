@@ -1,10 +1,14 @@
 {
+  "_note": "CONTROLLED run: identical fixed mesh, ONLY the prior sheets stripped. This isolates the structural priors as the single variable, holding TSDF surface and tessellation constant.",
+  "comparison": "walkthrough_control_priors_stripped.mp4 vs walkthrough_after_priors_present.mp4",
   "frames": 1799,
   "mean_abs_diff": 13.0309,
   "max_abs_diff": 31.0064,
   "max_frame": 973,
   "frames_over_2": 1581,
   "frames_over_5": 1549,
-  "bright_fraction_before": 0.00036,
-  "bright_fraction_after": 0.00013
+  "largest_diff_frames": [965, 967, 968, 969, 970, 971, 972, 973, 974, 975, 976, 977],
+  "bright_fraction_before": 0.0004,
+  "bright_fraction_after": 0.0001,
+  "bright_pixel_reduction_pct": 62.9
 }

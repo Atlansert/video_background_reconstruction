@@ -1,0 +1,14 @@
+{
+  "_note": "BEFORE-vs-AFTER run: shipped production mesh (priors deleted) vs fixed production mesh (priors present). The two meshes also differ in TSDF tessellation, so this over-states the prior-only effect. See p0_diff_stats_isolated.json for the controlled measurement.",
+  "comparison": "walkthrough_before_priors_deleted.mp4 vs walkthrough_after_priors_present.mp4",
+  "frames": 1799,
+  "mean_abs_diff": 24.211,
+  "max_abs_diff": 120.494,
+  "max_frame": 1596,
+  "frames_over_2": 1643,
+  "frames_over_5": 1553,
+  "largest_diff_frames": [1589, 1590, 1591, 1592, 1593, 1594, 1595, 1596, 1597, 1598, 1599, 1600],
+  "bright_fraction_before": 0.0007,
+  "bright_fraction_after": 0.0001,
+  "bright_pixel_reduction_pct": 80.9
+}

@@ -520,6 +520,85 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(len(filtered.triangles), len(main.triangles))
         self.assertTrue(filtered.has_vertex_colors() is False)
 
+    def test_regularize_flattens_rippled_wall_and_normals(self):
+        """A rippled wall must come out flat, with normals aligned to it.
+
+        Ripples on reconstructed walls shade as potholes under a directional
+        light even after vertex snapping; the normal blend is what fixes the
+        shading. Both halves of ``regularize`` are checked here.
+        """
+        import open3d as o3d
+
+        from tools.regularize_planes import regularize
+
+        # Wall plane x = 0: a 2 m x 2 m grid at x in [-6mm, +6mm] ripple,
+        # plus floor/ceiling slabs so plane fitting has room height.
+        n = 40
+        y, z = np.meshgrid(
+            np.linspace(-1.0, 1.0, n), np.linspace(-0.8, 0.8, n)
+        )
+        ripple = 0.006 * np.sin(12.0 * np.pi * y) * np.cos(9.0 * np.pi * z)
+        wall = np.column_stack([ripple.ravel(), y.ravel(), z.ravel()])
+        wall_faces = []
+        for row in range(n - 1):
+            for column in range(n - 1):
+                a = row * n + column
+                wall_faces.append([a, a + 1, a + n + 1])
+                wall_faces.append([a, a + n + 1, a + n])
+        wall_faces = np.asarray(wall_faces)
+        mesh = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(wall), o3d.utility.Vector3iVector(wall_faces)
+        )
+        floor = o3d.geometry.TriangleMesh.create_box(4.0, 0.1, 4.0)
+        floor.translate([-2.0, -0.9, -2.0])
+        ceiling = o3d.geometry.TriangleMesh.create_box(4.0, 0.1, 4.0)
+        ceiling.translate([-2.0, 0.8, -2.0])
+        mesh = mesh + floor + ceiling
+        mesh.compute_vertex_normals()
+        # Perturb the normals the way real reconstruction noise does: a
+        # directional light on jittery normals shades the ripples as
+        # potholes regardless of how flat the positions are.
+        rng = np.random.default_rng(4)
+        normals = np.asarray(mesh.vertex_normals).copy()
+        jitter = rng.normal(scale=0.25, size=normals.shape)
+        normals += jitter
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+        mesh.vertex_normals = o3d.utility.Vector3dVector(normals)
+
+        def wall_stats(target):
+            vertices = np.asarray(target.vertices)
+            normals = np.asarray(target.vertex_normals)
+            on_wall = np.abs(vertices[:, 0]) < 0.05
+            residual = vertices[on_wall, 0]
+            # Plane normal is +-x; |n_x| is the alignment strength.
+            alignment = np.abs(normals[on_wall, 0])
+            return (
+                float(np.sqrt((residual ** 2).mean())),
+                float(np.mean(alignment)),
+            )
+
+        rms_before, align_before = wall_stats(mesh)
+        result, report = regularize(
+            mesh,
+            gravity=np.array([0.0, 1.0, 0.0]),
+            cfg={
+                "band": 0.05,
+                "max_shift": 0.02,
+                "normal_tolerance_deg": 45.0,
+                "normal_pull_weight": 0.95,
+                "plane_threshold": 0.02,
+                "min_plane_points": 200,
+                "max_planes": 6,
+            },
+        )
+        rms_after, align_after = wall_stats(result)
+        self.assertLess(rms_after, rms_before * 0.5)
+        # Alignment is a cosine-like score capped at 1; require a clear move
+        # toward the plane rather than a fixed absolute gain.
+        self.assertGreater(align_after, align_before)
+        self.assertGreater(align_after, 0.95)
+        self.assertGreater(report["normals_regularized"], 0)
+
 
 class MaskTests(unittest.TestCase):
     def test_original_mask_is_padded_into_model_space(self):

@@ -154,12 +154,20 @@ def fit_wall_lines(points, gravity, floor_level, ceiling_level, cfg):
     ):
         duplicate = False
         for kept in accepted:
-            angle = abs(float(np.dot(normal_2d, kept["normal_2d"])))
-            if angle > np.cos(np.radians(8.0)) and abs(offset - kept["offset"]) < threshold:
+            # Signed alignment, so anti-parallel normals are handled
+            # explicitly. The previous version took abs() first and then
+            # tested `angle < -cos(8°)`, which can never fire, so
+            # anti-parallel duplicates of one wall were kept (observed:
+            # three near-coincident duplicate pairs).
+            alignment = float(np.dot(normal_2d, kept["normal_2d"]))
+            if alignment > np.cos(np.radians(8.0)) and abs(
+                offset - kept["offset"]
+            ) < threshold:
                 duplicate = True
                 break
-            # Same line, opposite normal sign.
-            if angle < -np.cos(np.radians(8.0)) and abs(offset + kept["offset"]) < threshold:
+            if alignment < -np.cos(np.radians(8.0)) and abs(
+                offset + kept["offset"]
+            ) < threshold:
                 duplicate = True
                 break
         if duplicate:
@@ -206,6 +214,67 @@ def fit_wall_lines(points, gravity, floor_level, ceiling_level, cfg):
             }
         )
     return walls
+
+
+def _extend_wall_extents(walls, gravity, room_height, cfg, camera_centers=None):
+    """Close wall corners and reach the camera footprint.
+
+    3D-RANSAC wall extents come from inlier quantiles, so foreground masks
+    cut them short wherever furniture stood and corners stay open (rendered
+    as holes between adjacent walls). Two evidence sources extend them:
+
+    - Adjacent wall lines intersect in the plan view; a wall may extend to
+      that corner when the required extension is plausible (< max_extension).
+    - The camera visits points inside the room, so a wall ending short of a
+      camera's tangent coordinate must continue behind the occluders.
+
+    Extensions are capped by ``wall_corner_max_extension_room_fraction`` so a
+    legitimately short wall (ending at a doorway) cannot be stretched into a
+    different room section.
+    """
+    if not walls:
+        return
+    max_extension = float(
+        cfg.get("wall_corner_max_extension_room_fraction", 0.6)
+    ) * max(room_height, 1e-6)
+    axis_u, axis_v = _plan_axes(gravity)
+    lines = []
+    for wall in walls:
+        normal = np.asarray(wall["normal"], dtype=float)
+        lines.append(
+            (np.array([normal @ axis_u, normal @ axis_v]), float(wall["offset"]))
+        )
+
+    for index, wall in enumerate(walls):
+        normal = np.asarray(wall["normal"], dtype=float)
+        tangent = np.cross(gravity, normal)
+        tangent /= np.linalg.norm(tangent) + 1e-12
+        low, high = float(wall["low"]), float(wall["high"])
+        normal_i, offset_i = lines[index]
+        for other, (normal_j, offset_j) in enumerate(lines):
+            if other == index:
+                continue
+            if abs(float(normal_i @ normal_j)) > np.cos(np.radians(15.0)):
+                continue
+            matrix = np.stack([normal_i, normal_j])
+            if abs(float(np.linalg.det(matrix))) < 1e-6:
+                continue
+            point = np.linalg.solve(matrix, np.array([offset_i, offset_j]))
+            corner = axis_u * point[0] + axis_v * point[1]
+            corner_t = float(corner @ tangent)
+            if corner_t < low and low - corner_t <= max_extension:
+                low = corner_t
+            elif corner_t > high and corner_t - high <= max_extension:
+                high = corner_t
+        if camera_centers is not None and len(camera_centers):
+            camera_t = np.asarray(camera_centers, dtype=float) @ tangent
+            lowest = float(camera_t.min())
+            highest = float(camera_t.max())
+            if lowest < low and low - lowest <= max_extension:
+                low = lowest
+            if highest > high and highest - high <= max_extension:
+                high = highest
+        wall["low"], wall["high"] = float(low), float(high)
 
 
 def _quad(vertices, color):
@@ -460,7 +529,8 @@ def _emit_wall(
     return mesh, openings
 
 
-def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=None):
+def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=None,
+                          camera_centers=None):
     import open3d as o3d
 
     points = np.asarray(points, dtype=float)
@@ -476,6 +546,17 @@ def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=No
     u_values, v_values = points @ axis_u, points @ axis_v
     u_min, u_max = np.quantile(u_values, [0.01, 0.99])
     v_min, v_max = np.quantile(v_values, [0.01, 0.99])
+    # The camera walks through the room, so every camera center must lie
+    # under this floor / over this ceiling. Points behind occluders are
+    # missing where furniture stood, which used to leave the floor short of
+    # the camera path (visible as floor gaps right below the trajectory).
+    if camera_centers is not None and len(camera_centers):
+        camera_u = np.asarray(camera_centers, dtype=float) @ axis_u
+        camera_v = np.asarray(camera_centers, dtype=float) @ axis_v
+        u_min = min(u_min, float(np.quantile(camera_u, 0.01)))
+        u_max = max(u_max, float(np.quantile(camera_u, 0.99)))
+        v_min = min(v_min, float(np.quantile(camera_v, 0.01)))
+        v_max = max(v_max, float(np.quantile(camera_v, 0.99)))
 
     floor_color = np.median(colors[heights >= np.quantile(heights, 0.94)], axis=0)
     ceiling_color = np.median(colors[heights <= np.quantile(heights, 0.06)], axis=0)
@@ -611,6 +692,16 @@ def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=No
                 }
             )
 
+    # Close wall corners / reach the camera footprint before emitting, so
+    # walls meet at intersections instead of leaving corner holes.
+    _extend_wall_extents(
+        walls,
+        gravity,
+        float(floor_level - ceiling_level),
+        cfg,
+        camera_centers=camera_centers,
+    )
+
     wall_count = 0
     openings_total = 0
     for wall in walls:
@@ -640,6 +731,38 @@ def build_structural_mesh(points, colors, planes, gravity, cfg, opening_hints=No
         "wall_openings": openings_total,
         "footprint": [float(u_min), float(u_max), float(v_min), float(v_max)],
     }
+    # Prior plane records for surface pruning (hybrid texturing route):
+    # plane equation plus the in-plane axes and extent the prior covers.
+    prior_planes = [
+        {
+            "normal": gravity.tolist(),
+            "offset": float(floor_level),
+            "axes": (axis_u.tolist(), axis_v.tolist()),
+            "extent": (float(u_min), float(u_max), float(v_min), float(v_max)),
+        },
+        {
+            "normal": gravity.tolist(),
+            "offset": float(ceiling_level),
+            "axes": (axis_u.tolist(), axis_v.tolist()),
+            "extent": (float(u_min), float(u_max), float(v_min), float(v_max)),
+        },
+    ]
+    for wall in walls:
+        wall_normal = np.asarray(wall["normal"], dtype=float)
+        wall_tangent = np.cross(gravity, wall_normal)
+        wall_tangent /= np.linalg.norm(wall_tangent) + 1e-12
+        prior_planes.append(
+            {
+                "normal": wall_normal.tolist(),
+                "offset": float(wall["offset"]),
+                "axes": (wall_tangent.tolist(), gravity.tolist()),
+                "extent": (
+                    float(wall["low"]), float(wall["high"]),
+                    float(ceiling_level), float(floor_level),
+                ),
+            }
+        )
+    bounds["prior_planes"] = prior_planes
     return structural, bounds
 
 
@@ -656,7 +779,271 @@ def _model_rgb(frame_path: str, coords: np.ndarray, width: int, height: int) -> 
     return canvas
 
 
-def build_tsdf_mesh(reconstruction_path: Path, cfg):
+def subdivide_long_edges(mesh, max_edge_length, max_rounds=7):
+    """Split triangles whose longest edge exceeds ``max_edge_length``.
+
+    Structural priors are emitted as large quads (a floor can be one
+    11 m x 5 m quad). Per-vertex texturing needs vertices at texture scale,
+    so each triangle is halved at its longest edge until edges are short
+    enough (or ``max_rounds`` runs out). Existing vertex colors are carried
+    over; midpoint vertices average their endpoints.
+    """
+    import open3d as o3d
+
+    vertices = np.asarray(mesh.vertices, dtype=float).tolist()
+    colors = (
+        np.asarray(mesh.vertex_colors, dtype=float).tolist()
+        if mesh.has_vertex_colors()
+        else None
+    )
+    faces = [list(face) for face in np.asarray(mesh.triangles)]
+    # Midpoints are cached per edge so the two triangles sharing an edge use
+    # ONE new vertex. Creating one midpoint per triangle leaves T-junctions
+    # and split normals — the textured priors came out faceted/checkered.
+    midpoint_indices = {}
+    for _ in range(max_rounds):
+        grown = []
+        split_any = False
+        for a, b, c in faces:
+            pa = np.asarray(vertices[a])
+            pb = np.asarray(vertices[b])
+            pc = np.asarray(vertices[c])
+            # Each tuple pairs an edge's length with its own endpoints and
+            # the opposite vertex.
+            edge_options = [
+                (float(np.linalg.norm(pa - pb)), a, b, c),
+                (float(np.linalg.norm(pb - pc)), b, c, a),
+                (float(np.linalg.norm(pc - pa)), c, a, b),
+            ]
+            length, first, second, opposite = max(edge_options)
+            if length <= max_edge_length:
+                grown.append([a, b, c])
+                continue
+            key = (first, second) if first < second else (second, first)
+            midpoint_index = midpoint_indices.get(key)
+            if midpoint_index is None:
+                midpoint_index = len(vertices)
+                midpoint_indices[key] = midpoint_index
+                vertices.append(
+                    ((np.asarray(vertices[first]) + np.asarray(vertices[second])) / 2.0).tolist()
+                )
+                if colors is not None:
+                    colors.append(
+                        ((np.asarray(colors[first]) + np.asarray(colors[second])) / 2.0).tolist()
+                    )
+            grown.append([first, midpoint_index, opposite])
+            grown.append([midpoint_index, second, opposite])
+            split_any = True
+        faces = grown
+        if not split_any:
+            break
+    subdivided = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(np.asarray(vertices)),
+        o3d.utility.Vector3iVector(np.asarray(faces, dtype=np.int32)),
+    )
+    if colors is not None:
+        subdivided.vertex_colors = o3d.utility.Vector3dVector(np.asarray(colors))
+    subdivided.remove_degenerate_triangles()
+    subdivided.compute_vertex_normals()
+    return subdivided
+
+
+def texture_mesh_from_frames(
+    mesh,
+    reconstruction_path,
+    frame_paths,
+    max_frames=48,
+    min_depth_ratio=0.75,
+    max_depth_ratio=1.5,
+):
+    """Color mesh vertices by projecting them into the inpainted video frames.
+
+    Real texture where the original pixels exist, generated texture where the
+    foreground mask hid the surface -- that is the point of the hybrid route.
+    Per frame, a projected sample is accepted when:
+
+    - the pixel shows real background geometry at (roughly) this depth
+      (``min_depth_ratio <= depth_at / point_depth <= max_depth_ratio``) —
+      the point is the observed surface, not occluded nor a farther surface
+      seen through it;
+    - or the pixel is foreground: the original saw furniture there, so the
+      frame's content is the generated replacement and is exactly the
+      texture the hybrid route wants;
+    - or the pixel has no valid depth at all (unobserved low-confidence
+      pixels), where passthrough compositing keeps the real pixel.
+
+    The vertex color is the mean over accepted samples; vertices with no
+    accepted sample keep their existing color.
+    """
+    import open3d as o3d
+
+    data = np.load(reconstruction_path)
+    extrinsics = data["extrinsics"]
+    intrinsics = data["intrinsics"]
+    coords = data["original_coords"]
+    depth = data["depth"][..., 0]
+    foreground = data["foreground_masks"]
+    frame_ids = [int(value) for value in data["frame_ids"]]
+
+    frame_paths = [Path(path) for path in frame_paths]
+    if not frame_paths:
+        raise ValueError("texture_mesh_from_frames needs at least one frame path")
+    pose_by_id = {fid: index for index, fid in enumerate(frame_ids)}
+    # Keep only frames that carry a pose (the reconstruction exports keyframes
+    # only, ~71 of 1799), THEN cap the count. Capping an evenly spaced slice
+    # first left ~2 usable frames and starved nearly every vertex.
+    frame_paths = [path for path in frame_paths if int(path.stem) in pose_by_id]
+    if not frame_paths:
+        raise ValueError("texture_mesh_from_frames found no frames matching exported poses")
+    if len(frame_paths) > max_frames:
+        keep = np.unique(np.linspace(0, len(frame_paths) - 1, max_frames, dtype=int))
+        frame_paths = [frame_paths[index] for index in keep]
+
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    colors = (
+        np.asarray(mesh.vertex_colors, dtype=float).copy()
+        if mesh.has_vertex_colors()
+        else None
+    )
+    totals = np.zeros((len(vertices), 3), dtype=np.float64)
+    counts = np.zeros(len(vertices), dtype=np.int64)
+
+    for frame_path in frame_paths:
+        image = cv2.imread(str(frame_path))
+        if image is None:
+            continue
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_height, image_width = image.shape[:2]
+        # Match the frame to its exported pose by frame id; frames outside the
+        # exported set carry no usable pose and are skipped.
+        index = pose_by_id.get(int(Path(frame_path).stem))
+        if index is None or index >= len(extrinsics):
+            continue
+        extrinsic = np.asarray(extrinsics[index], dtype=float)
+        intrinsic = np.asarray(intrinsics[index], dtype=float)
+        frame_coords = np.asarray(coords[index], dtype=float)
+        point_camera = vertices @ extrinsic[:3, :3].T + extrinsic[:3, 3]
+        depth_z = point_camera[:, 2]
+        projected = point_camera @ intrinsic.T
+        u_model = np.divide(
+            projected[:, 0], np.where(np.abs(projected[:, 2]) > 1e-6, projected[:, 2], 1.0)
+        )
+        v_model = np.divide(
+            projected[:, 1], np.where(np.abs(projected[:, 2]) > 1e-6, projected[:, 2], 1.0)
+        )
+        width_original = max(frame_coords[2] - frame_coords[0], 1e-6)
+        height_original = max(frame_coords[3] - frame_coords[1], 1e-6)
+        ox = (u_model - frame_coords[0]) / width_original * frame_coords[4]
+        oy = (v_model - frame_coords[1]) / height_original * frame_coords[5]
+        in_front = depth_z > 1e-6
+        in_bounds = (
+            in_front
+            & (ox >= 0) & (ox < frame_coords[4])
+            & (oy >= 0) & (oy < frame_coords[5])
+        )
+        if not in_bounds.any():
+            continue
+        depth_map = depth[index]
+        mask_map = foreground[index]
+        mx = np.clip(u_model.astype(int), 0, depth_map.shape[1] - 1)
+        my = np.clip(v_model.astype(int), 0, depth_map.shape[0] - 1)
+        depth_at = depth_map[my, mx]
+        foreground_at = mask_map[my, mx]
+        real_surface = (
+            (depth_at > 0)
+            & (depth_at >= depth_z * min_depth_ratio)
+            & (depth_at <= depth_z * max_depth_ratio)
+        )
+        generated = foreground_at & (depth_at > 0)
+        unobserved = (depth_at <= 0) & ~foreground_at
+        accepted = in_bounds & (real_surface | generated | unobserved)
+        if not accepted.any():
+            continue
+        ox_idx = np.clip(ox.astype(int), 0, image_width - 1)
+        oy_idx = np.clip(oy.astype(int), 0, image_height - 1)
+        picked = image[oy_idx[accepted], ox_idx[accepted]].astype(np.float64) / 255.0
+        accepted_indices = np.flatnonzero(accepted)
+        np.add.at(totals, accepted_indices, picked)
+        np.add.at(counts, accepted_indices, 1)
+
+    sampled = np.flatnonzero(counts > 0)
+    if len(sampled):
+        if colors is None:
+            colors = np.full((len(vertices), 3), 0.7)
+        colors[sampled] = totals[sampled] / counts[sampled, None]
+        mesh.vertex_colors = o3d.utility.Vector3dVector(np.asarray(colors))
+    return mesh, {
+        "vertices": int(len(vertices)),
+        "textured": int(len(sampled)),
+        "textured_fraction": float(len(sampled)) / max(len(vertices), 1),
+        "frames_used": len(frame_paths),
+        "mean_samples_per_vertex": float(counts[sampled].mean()) if len(sampled) else 0.0,
+    }
+
+
+def _prune_surface_against_priors(surface, prior_planes, cfg):
+    """Drop surface triangles that duplicate a structural prior plane.
+
+    The prior quads are authoritative for the floor, ceiling and wall planes
+    (clean, complete, and re-textured in the hybrid route). TSDF triangles
+    hugging those planes z-fight with them — visible as faceted moiré on
+    walls/floors — and add nothing. A triangle is dropped when its centroid
+    lies within ``band`` of the plane, it is parallel to it, and it falls
+    inside the prior's in-plane extent (with a small margin).
+
+    Each prior plane is ``{"normal", "offset", "axes": (a1, a2), "extent":
+    (lo1, hi1, lo2, hi2)}`` where the axes span the plane and the extent is
+    expressed in those axes.
+    """
+    import open3d as o3d
+
+    if not prior_planes or not len(surface.triangles):
+        return surface, 0
+    surface.compute_triangle_normals()
+    vertices = np.asarray(surface.vertices, dtype=float)
+    faces = np.asarray(surface.triangles)
+    normals = np.asarray(surface.triangle_normals)
+    band = float(cfg.get("texture_prune_band_m", 0.06))
+    margin = float(cfg.get("texture_prune_extent_margin_m", 0.25))
+    keep = np.ones(len(faces), dtype=bool)
+    centroids = vertices[faces].mean(axis=1)
+    for plane in prior_planes:
+        normal = np.asarray(plane["normal"], dtype=float)
+        offset = float(plane["offset"])
+        axis1, axis2 = (np.asarray(axis, dtype=float) for axis in plane["axes"])
+        lo1, hi1, lo2, hi2 = plane["extent"]
+        distance = centroids @ normal - offset
+        parallel = np.abs(normals @ normal) > 0.8
+        a1 = centroids @ axis1
+        a2 = centroids @ axis2
+        inside = (
+            (a1 >= lo1 - margin) & (a1 <= hi1 + margin)
+            & (a2 >= lo2 - margin) & (a2 <= hi2 + margin)
+        )
+        keep &= ~((np.abs(distance) < band) & parallel & inside)
+    pruned = int((~keep).sum())
+    if not pruned:
+        return surface, 0
+    subset = o3d.geometry.TriangleMesh()
+    subset.vertices = o3d.utility.Vector3dVector(vertices)
+    subset.triangles = o3d.utility.Vector3iVector(faces[keep])
+    if surface.has_vertex_colors():
+        subset.vertex_colors = o3d.utility.Vector3dVector(
+            np.asarray(surface.vertex_colors)
+        )
+    subset.remove_unreferenced_vertices()
+    subset.compute_vertex_normals()
+    return subset, pruned
+
+
+def build_tsdf_mesh(reconstruction_path: Path, cfg, color_paths=None):
+    """Fuse the SLAM depth volume; colors come from ``color_paths`` if given.
+
+    Geometry (depth/confidence/masks/poses) always comes from the
+    reconstruction NPZ; ``color_paths`` optionally overrides only the RGB
+    source, one path per exported frame. The hybrid route uses this to paint
+    structurally-derived geometry with the inpainted video's texture.
+    """
     import open3d as o3d
 
     data = np.load(reconstruction_path)
@@ -668,6 +1055,21 @@ def build_tsdf_mesh(reconstruction_path: Path, cfg):
     extrinsics = data["extrinsics"]
     coords = data["original_coords"]
     frame_paths = data["frame_paths"]
+    if color_paths is not None and len(color_paths) != len(frame_paths):
+        # Color frames may be a full-video sequence (1799) while the NPZ
+        # exports only keyframes (71); map by frame id, not position.
+        color_by_id = {int(Path(path).stem): Path(path) for path in color_paths}
+        mapped = []
+        for path in frame_paths:
+            mapped_path = color_by_id.get(int(Path(path).stem))
+            if mapped_path is None:
+                raise ValueError(
+                    f"color_paths has no frame {Path(path).stem} needed by the reconstruction"
+                )
+            mapped.append(mapped_path)
+        color_paths = mapped
+    elif color_paths is not None:
+        color_paths = [Path(path) for path in color_paths]
     height = int(depth.shape[1])
     width = int(depth.shape[2])
     positive_depth = depth[..., 0][depth[..., 0] > 0]
@@ -680,7 +1082,8 @@ def build_tsdf_mesh(reconstruction_path: Path, cfg):
     for index, frame_path in enumerate(frame_paths):
         depth_image = depth[index, ..., 0].copy()
         depth_image[(confidence[index] < cutoff) | foreground[index]] = 0
-        color_image = _model_rgb(str(frame_path), coords[index], width, height)
+        color_source = frame_paths[index] if color_paths is None else color_paths[index]
+        color_image = _model_rgb(str(color_source), coords[index], width, height)
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
             o3d.geometry.Image(color_image),
             o3d.geometry.Image(depth_image.astype(np.float32)),
@@ -876,11 +1279,19 @@ def _boundary_loops(mesh):
     return loops
 
 
-def fill_small_boundary_holes(mesh, max_loop_edges=60):
+def fill_small_boundary_holes(mesh, max_loop_edges=60, protected_vertices=None):
     """Fan-fill boundary loops whose perimeter is small enough to be noise.
 
     Big loops (doorways, stairs openings) are left untouched. Returns the
     updated mesh and the number of filled loops.
+
+    ``protected_vertices`` names the structural prior quads by vertex index.
+    A prior is a flat 2-triangle sheet, so its own four-edge rim looks
+    exactly like a small artifact hole; ear-clipping it laid a coincident
+    copy of the quad on top of itself, doubling the floor and ceiling area
+    (44.59 -> 89.18 m2) and z-fighting in the render. A loop made up
+    entirely of protected vertices is a prior's own rim, not a hole. Real
+    TSDF holes are bounded by surface vertices, so they are still filled.
 
     The mesh is rebuilt once at the end: appending via ``mesh += ...`` while
     the addend's vertex buffer aliases ``mesh.vertices`` (a numpy view)
@@ -890,7 +1301,17 @@ def fill_small_boundary_holes(mesh, max_loop_edges=60):
 
     loops = _boundary_loops(mesh)
     filled = 0
-    closed_loops = [loop for loop in loops if len(loop) <= max_loop_edges]
+    protected = (
+        set()
+        if protected_vertices is None
+        else {int(vertex) for vertex in protected_vertices}
+    )
+    closed_loops = [
+        loop
+        for loop in loops
+        if len(loop) <= max_loop_edges
+        and not (protected and all(int(vertex) in protected for vertex in loop))
+    ]
     original_vertices = np.asarray(mesh.vertices).copy()
     original_faces = np.asarray(mesh.triangles)
     original_colors = (
@@ -990,7 +1411,54 @@ def clean_mesh(mesh, cfg):
     return mesh, stats
 
 
-def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, opening_hints=None):
+def _prior_survival_report(combined, structural, surface_vertex_count):
+    """Measure how much structural prior area reached the final mesh.
+
+    ``build_mesh`` appends the priors after the dense surface, so a triangle
+    belongs to a prior when all three of its vertex indices are at or above
+    ``surface_vertex_count``. Comparing that area with the area the priors
+    were emitted with guards the P0 deletion failure mode (priors filtered
+    away, ratio well below 1.0), which the rest of the report could not show:
+    ``structural_vertices`` only counts the emitted priors, not the ones that
+    survived into the delivered mesh.
+
+    Call this while the append offset is still valid — the combined-level
+    hole filler rebuilds the vertex array and may renumber it.
+    """
+    faces = np.asarray(combined.triangles)
+    vertices = np.asarray(combined.vertices, dtype=float)
+    prior_faces = np.zeros((0, 3), dtype=np.int64)
+    if len(faces):
+        prior_faces = faces[(faces >= surface_vertex_count).all(axis=1)]
+    prior_area = 0.0
+    if len(prior_faces):
+        triangles = vertices[prior_faces]
+        cross = np.cross(
+            triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
+        )
+        prior_area = float(0.5 * np.linalg.norm(cross, axis=1).sum())
+    structural_area = float(structural.get_surface_area())
+    return {
+        "structural_area_m2": round(structural_area, 4),
+        "prior_area_in_combined_m2": round(prior_area, 4),
+        "prior_triangles_in_combined": int(len(prior_faces)),
+        "ratio": (
+            round(prior_area / structural_area, 4) if structural_area > 1e-9 else None
+        ),
+    }
+
+
+def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, opening_hints=None,
+               texture_frames=None, texture_max_frames=48):
+    """Fit the room, then optionally texture it from inpainted video frames.
+
+    ``texture_frames`` (hybrid route B): a list of inpainted full-resolution
+    frame paths in video order. When given, the TSDF surface is painted from
+    those frames instead of the original ones, and both the surface and the
+    structural priors are re-textured per vertex by multi-view projection
+    after assembly — real texture where the original pixels exist, generated
+    texture where the foreground mask hid the surface.
+    """
     import open3d as o3d
 
     output_dir = Path(output_dir)
@@ -1005,6 +1473,12 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, openin
         with np.load(reconstruction_path) as data:
             extrinsics = data["extrinsics"]
     gravity = estimate_gravity(extrinsics)
+    camera_centers = None
+    if extrinsics is not None and len(extrinsics):
+        rotation = np.asarray(extrinsics)[:, :3, :3]
+        translation = np.asarray(extrinsics)[:, :3, 3]
+        # world_to_cam = [R | t]; the camera center in world is -R^T t.
+        camera_centers = -np.einsum("nji,nj->ni", rotation, translation)
     planes = fit_planes(
         points,
         gravity,
@@ -1013,8 +1487,10 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, openin
         max_planes=cfg.get("max_planes", 12),
     )
     structural, bounds = build_structural_mesh(
-        points, colors, planes, gravity, cfg, opening_hints=opening_hints
+        points, colors, planes, gravity, cfg, opening_hints=opening_hints,
+        camera_centers=camera_centers,
     )
+    prior_planes = bounds.pop("prior_planes", [])
     structural_path = output_dir / "structural_planes.ply"
     o3d.io.write_triangle_mesh(str(structural_path), structural)
 
@@ -1023,7 +1499,9 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, openin
     tsdf_error = None
     if cfg.get("use_tsdf", True) and reconstruction_path:
         try:
-            surface = build_tsdf_mesh(Path(reconstruction_path), cfg)
+            surface = build_tsdf_mesh(
+                Path(reconstruction_path), cfg, color_paths=texture_frames
+            )
             if len(surface.vertices) == 0:
                 raise RuntimeError("TSDF returned an empty mesh")
             surface_method = "tsdf"
@@ -1031,16 +1509,69 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, openin
             tsdf_error = str(error)
     if surface is None:
         surface = build_poisson_mesh(points, colors, cfg)
+    pruned_triangles = 0
+    if texture_frames and prior_planes:
+        # Prior planes are authoritative; drop the TSDF triangles that hug
+        # them so the two coincident surfaces cannot z-fight.
+        surface, pruned_triangles = _prune_surface_against_priors(
+            surface, prior_planes, cfg
+        )
 
+    # Clean (fragment filter + hole fill) and decimate ONLY the dense surface.
+    # The structural priors are a few large flat quads; running them through
+    # the small-component filter deletes them (< mesh_min_component_triangles)
+    # and quadric decimation eats their exact plane geometry. Appending them
+    # afterwards keeps floor/ceiling/walls exactly where the priors put them.
+    target_triangles = cfg.get("mesh_target_triangles", 250000)
+    if len(surface.triangles) > target_triangles:
+        surface = surface.simplify_quadric_decimation(target_triangles)
+    surface, mesh_clean = clean_mesh(surface, cfg)
+
+    # ``surface + structural`` appends the prior vertices after the surface
+    # ones, so every index >= this offset belongs to a prior quad. The hole
+    # filler uses that to leave the priors' own rims open instead of capping
+    # each quad with a coincident duplicate of itself.
+    surface_vertex_count = len(np.asarray(surface.vertices))
     combined = surface + structural
     combined.remove_degenerate_triangles()
     combined.remove_duplicated_triangles()
     combined.remove_non_manifold_edges()
     combined.compute_vertex_normals()
-    combined, mesh_clean = clean_mesh(combined, cfg)
-    target_triangles = cfg.get("mesh_target_triangles", 250000)
-    if len(combined.triangles) > target_triangles:
-        combined = combined.simplify_quadric_decimation(target_triangles)
+    # Measured here, while the priors are still the vertex tail.
+    prior_survival = _prior_survival_report(combined, structural, surface_vertex_count)
+    area_before_hole_fill = float(combined.get_surface_area())
+    combined, prior_holes = fill_small_boundary_holes(
+        combined,
+        max_loop_edges=int(cfg.get("mesh_fill_hole_max_edges", 60)),
+        protected_vertices=range(
+            surface_vertex_count, len(np.asarray(combined.vertices))
+        ),
+    )
+    mesh_clean["holes_filled"] = int(mesh_clean.get("holes_filled", 0)) + prior_holes
+    # Capping a prior rim instead of skipping it laid a second copy of that
+    # quad on top of the first, so the regression showed up as ~a whole prior
+    # plane of extra area appearing here (floor alone: 44.59 m2).
+    prior_survival["area_added_by_hole_fill_m2"] = round(
+        float(combined.get_surface_area()) - area_before_hole_fill, 4
+    )
+
+    texture_report = None
+    if texture_frames:
+        # Priors are huge quads; subdivide before texturing so vertices sit at
+        # texture scale. Subdivision happens after assembly and after decimation
+        # (decimating first would flatten the priors' exact plane geometry).
+        subdivide_edge = float(
+            cfg.get("texture_subdivide_edge_m", 0.05)
+        )
+        combined = subdivide_long_edges(combined, subdivide_edge)
+        combined, texture_report = texture_mesh_from_frames(
+            combined,
+            Path(reconstruction_path),
+            texture_frames,
+            max_frames=int(texture_max_frames),
+        )
+        texture_report["subdivide_edge_m"] = subdivide_edge
+
     mesh_path = output_dir / "background_mesh.ply"
     if not o3d.io.write_triangle_mesh(str(mesh_path), combined, write_ascii=False):
         raise RuntimeError(f"Failed to write {mesh_path}")
@@ -1074,6 +1605,9 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, openin
         "combined_vertices": len(combined.vertices),
         "combined_triangles": len(combined.triangles),
         "mesh_clean": mesh_clean,
+        "prior_survival": prior_survival,
+        "texture": texture_report,
+        "pruned_surface_triangles": pruned_triangles,
         "tsdf_error": tsdf_error,
         "glb_error": glb_error,
     }

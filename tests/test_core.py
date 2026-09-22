@@ -225,6 +225,480 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(len(mesh.vertices), 8)
         self.assertEqual(len(mesh.triangles), 12)
 
+    def test_anti_parallel_duplicate_wall_is_rejected(self):
+        """One wall must appear once even if RANSAC reports both orientations.
+
+        The previous dedupe took abs() before testing the negative-alignment
+        branch, so a candidate whose normal pointed the other way from an
+        already-kept line was accepted again — observed on real data as three
+        near-coincident duplicate wall pairs.
+        """
+        from vbr.geometry import fit_wall_lines
+
+        rng = np.random.default_rng(3)
+        # One full-height wall at z = 0 (normal along +z) built from a dense
+        # mid-height band, plus a sparse floor/ceiling so the height quantiles
+        # span a room. Duplicate orientation emerges from RANSAC sampling.
+        wall = np.column_stack(
+            [
+                rng.uniform(-1.0, 1.0, 4000),
+                rng.uniform(0.2, 1.8, 4000),
+                rng.normal(0.0, 0.01, 4000),
+            ]
+        )
+        floor = np.column_stack(
+            [
+                rng.uniform(-1.0, 1.0, 500),
+                np.full(500, 2.0),
+                rng.uniform(-1.5, 1.5, 500),
+            ]
+        )
+        ceiling = floor.copy()
+        ceiling[:, 1] = 0.0
+        points = np.vstack([wall, floor, ceiling])
+        walls = fit_wall_lines(
+            points,
+            np.array([0.0, 1.0, 0.0]),
+            floor_level=2.0,
+            ceiling_level=0.0,
+            cfg={"wall_ransac_iterations": 200, "wall_ransac_seed": 11},
+        )
+        coincident = [
+            wall
+            for wall in walls
+            if abs(abs(float(wall["normal"][2])) - 1.0) < 0.2
+            and abs(abs(float(wall["offset"])) - 0.0) < 0.2
+        ]
+        self.assertLessEqual(len(coincident), 1, walls)
+
+    def test_corner_extension_closes_adjacent_walls(self):
+        """Two perpendicular walls whose inlier extents stop short of the
+        corner must extend to meet it, and extensions are capped."""
+        from vbr.geometry import _extend_wall_extents
+
+        gravity = np.array([0.0, 1.0, 0.0])
+        walls = [
+            {  # plane z=0, tangent +x, currently stops at x = -0.5
+                "normal": np.array([0.0, 0.0, 1.0]),
+                "offset": 0.0,
+                "low": -2.0,
+                "high": -0.5,
+            },
+            {  # plane x=0, tangent -z (t = -z), currently stops at t = 0.5
+                "normal": np.array([1.0, 0.0, 0.0]),
+                "offset": 0.0,
+                "low": 0.5,
+                "high": 2.0,
+            },
+        ]
+        _extend_wall_extents(
+            walls, gravity, room_height=2.0,
+            cfg={"wall_corner_max_extension_room_fraction": 0.6},
+        )
+        # Corner at the origin: wall0's high end reaches x = 0, wall1's low
+        # end reaches t = 0 (the corner lies on its line).
+        self.assertAlmostEqual(walls[0]["high"], 0.0, places=5)
+        self.assertAlmostEqual(walls[1]["low"], 0.0, places=5)
+        # Extension beyond the cap leaves the extent untouched.
+        far = [
+            {
+                "normal": np.array([0.0, 0.0, 1.0]),
+                "offset": 0.0,
+                "low": 5.0,
+                "high": 6.0,
+            },
+            {
+                "normal": np.array([1.0, 0.0, 0.0]),
+                "offset": 0.0,
+                "low": -6.0,
+                "high": -5.0,
+            },
+        ]
+        _extend_wall_extents(
+            far, gravity, room_height=2.0,
+            cfg={"wall_corner_max_extension_room_fraction": 0.6},
+        )
+        self.assertEqual(far[0]["low"], 5.0)
+        self.assertEqual(far[1]["low"], -6.0)
+
+    def test_camera_footprint_extends_wall_extent(self):
+        from vbr.geometry import _extend_wall_extents
+
+        gravity = np.array([0.0, 1.0, 0.0])
+        wall = {
+            "normal": np.array([0.0, 0.0, 1.0]),
+            "offset": 0.0,
+            "low": -1.0,
+            "high": 1.0,
+        }
+        # A camera further along the wall's tangent (+x) pulls the high end out,
+        # within the extension cap (0.6 * room_height = 1.2).
+        cameras = np.asarray([[2.0, 0.5, -0.5]])
+        _extend_wall_extents(
+            [wall], gravity, room_height=2.0,
+            cfg={"wall_corner_max_extension_room_fraction": 0.6},
+            camera_centers=cameras,
+        )
+        self.assertAlmostEqual(wall["high"], 2.0, places=5)
+
+    def test_structural_priors_survive_combined_mesh(self):
+        """Floor/ceiling/wall priors must reach the final mesh.
+
+        Regression: the assembled mesh (surface + structural) used to run
+        through clean_mesh, whose small-component filter deleted every prior
+        quad (2 triangles each) below mesh_min_component_triangles, and
+        quadric decimation flattened their plane geometry. Rendered views
+        showed 28% missing pixels as a result.
+        """
+        import open3d as o3d
+
+        from vbr.geometry import build_mesh
+
+        rng = np.random.default_rng(5)
+        # A shallow dome of points: TSDF/Poisson surface plus the priors.
+        x, z = np.meshgrid(np.linspace(-1.5, 1.5, 40), np.linspace(-1.5, 1.5, 40))
+        y = -0.4 * np.exp(-(x**2 + z**2))
+        points = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
+        colors = np.full_like(points, 0.6)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            report = build_mesh(
+                points,
+                colors,
+                output,
+                {"use_tsdf": False, "poisson_depth": 6,
+                 "mesh_min_component_triangles": 10,
+                 "footprint_wall_fallback": True},
+                reconstruction_path=None,
+            )
+            mesh = o3d.io.read_triangle_mesh(str(output / "background_mesh.ply"))
+        room = report["room"]
+        self.assertEqual(room["wall_source"], "robust_footprint_fallback")
+        vertices = np.asarray(mesh.vertices)
+        for name, level in (("floor", room["floor_level"]),
+                            ("ceiling", room["ceiling_level"])):
+            on_plane = np.isclose(vertices[:, 1], level, atol=1e-6).sum()
+            self.assertGreaterEqual(on_plane, 4, f"{name} quad missing")
+
+    def test_subdivision_shares_midpoints_between_neighbors(self):
+        """Adjacent triangles must share the midpoint of their common edge.
+
+        One midpoint per triangle leaves T-junctions and split vertex normals;
+        textured priors rendered with a faceted/checkered moire pattern.
+        """
+        import open3d as o3d
+
+        from vbr.geometry import subdivide_long_edges
+
+        quad = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(
+                np.asarray([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0],
+                            [4.0, 0.0, 4.0], [0.0, 0.0, 4.0]])
+            ),
+            o3d.utility.Vector3iVector(np.asarray([[0, 1, 2], [0, 2, 3]])),
+        )
+        subdivided = subdivide_long_edges(quad, max_edge_length=1.0)
+        positions = np.asarray(subdivided.vertices)
+        unique = np.unique(np.round(positions, 6), axis=0)
+        self.assertEqual(len(positions), len(unique))
+        # Area is preserved and every vertex normal agrees (planar, shared).
+        area = o3d.geometry.TriangleMesh.get_surface_area(subdivided)
+        self.assertAlmostEqual(area, 16.0, places=4)
+        subdivided.compute_vertex_normals()
+        normals = np.asarray(subdivided.vertex_normals)
+        self.assertTrue(np.allclose(normals[:, 1], normals[0, 1], atol=1e-6))
+
+    def test_prune_drops_coplanar_surface_triangles(self):
+        """TSDF triangles hugging a prior plane are removed, others kept."""
+        import open3d as o3d
+
+        from vbr.geometry import _prune_surface_against_priors
+
+        # Two horizontal quads: one at the prior plane y=0, one 0.5 m below.
+        def slab(y):
+            return o3d.geometry.TriangleMesh(
+                o3d.utility.Vector3dVector(
+                    np.asarray([[0.0, y, 0.0], [2.0, y, 0.0],
+                                [2.0, y, 2.0], [0.0, y, 2.0]])
+                ),
+                o3d.utility.Vector3iVector(np.asarray([[0, 1, 2], [0, 2, 3]])),
+            )
+
+        surface = slab(0.0) + slab(0.5)
+        prior = {
+            "normal": [0.0, 1.0, 0.0],
+            "offset": 0.0,
+            "axes": ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            "extent": (-1.0, 3.0, -1.0, 3.0),
+        }
+        pruned, dropped = _prune_surface_against_priors(
+            surface, [prior], {"texture_prune_band_m": 0.06}
+        )
+        self.assertEqual(dropped, 2)
+        self.assertEqual(len(np.asarray(pruned.triangles)), 2)
+        kept_heights = np.asarray(pruned.vertices)[:, 1]
+        self.assertAlmostEqual(float(np.median(kept_heights)), 0.5, places=4)
+
+    def test_texture_projection_samples_and_caps_frames(self):
+        """Projection colors vertices from video frames, keyframes only."""
+        import open3d as o3d
+
+        from vbr.geometry import texture_mesh_from_frames
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frame_dir = root / "frames"
+            frame_dir.mkdir()
+            for index in (0, 10):
+                cv2.imwrite(
+                    str(frame_dir / f"{index:06d}.jpg"),
+                    np.full((8, 8, 3), (0, 0, 255), dtype=np.uint8),  # red
+                )
+            # Reconstruction over one keyframe: identity-ish pose looking
+            # down -z, 8x8 frames, no foreground, valid depth 2.0 everywhere.
+            extrinsics = np.zeros((1, 3, 4), dtype=np.float64)
+            extrinsics[0][:3, :3] = np.eye(3)
+            intrinsics = np.zeros((1, 3, 3), dtype=np.float64)
+            intrinsics[0] = [[4.0, 0.0, 4.0], [0.0, 4.0, 4.0], [0.0, 0.0, 1.0]]
+            np.savez(
+                root / "recon.npz",
+                extrinsics=extrinsics,
+                intrinsics=intrinsics,
+                depth=np.full((1, 8, 8, 1), 2.0, dtype=np.float32),
+                confidence=np.full((1, 8, 8), 1.0, dtype=np.float32),
+                confidence_cutoff=np.float32(0.5),
+                frame_paths=np.asarray([str(frame_dir / "000000.jpg")]),
+                frame_ids=np.asarray([0], dtype=np.int32),
+                original_coords=np.asarray([[0.0, 0.0, 8.0, 8.0, 8.0, 8.0]]),
+                foreground_masks=np.zeros((1, 8, 8), dtype=bool),
+            )
+            mesh = o3d.geometry.TriangleMesh(
+                o3d.utility.Vector3dVector(
+                    np.asarray([[-0.1, -0.1, 2.0], [0.1, -0.1, 2.0],
+                                [0.0, 0.1, 2.0]])
+                ),
+                o3d.utility.Vector3iVector(np.asarray([[0, 1, 2]])),
+            )
+            mesh.vertex_colors = o3d.utility.Vector3dVector(
+                np.full((3, 3), 0.5)
+            )
+            textured, report = texture_mesh_from_frames(
+                mesh,
+                root / "recon.npz",
+                sorted(frame_dir.glob("*.jpg")),
+            )
+        # The pose exists only for frame id 0 (frame 10 has none and is
+        # filtered before the cap), and red pixels paint the vertices.
+        self.assertEqual(report["frames_used"], 1)
+        self.assertEqual(report["textured"], 3)
+        colors = np.asarray(textured.vertex_colors)
+        self.assertTrue(np.all(colors[:, 0] > 0.9))   # red channel high
+        self.assertTrue(np.all(colors[:, 2] < 0.1))
+
+    def test_prior_rim_is_not_capped_by_hole_fill(self):
+        """A prior quad's own rim must not be ear-clipped into a duplicate.
+
+        Regression (P0): the assembled mesh ran fill_small_boundary_holes,
+        which saw each flat 2-triangle prior's four-edge rim as an artifact
+        hole and capped it with a coincident copy of the same quad. The
+        floor alone went 44.59 -> 89.18 m2 and z-fought in the render.
+        """
+        import open3d as o3d
+
+        from vbr.geometry import fill_small_boundary_holes
+
+        quad = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(
+                np.asarray([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0],
+                            [4.0, 0.0, 4.0], [0.0, 0.0, 4.0]])
+            ),
+            o3d.utility.Vector3iVector(np.asarray([[0, 1, 2], [0, 2, 3]])),
+        )
+        before = float(o3d.geometry.TriangleMesh.get_surface_area(quad))
+        # With no protection the rim is filled and the area doubles.
+        doubled, filled_loose = fill_small_boundary_holes(quad, max_loop_edges=60)
+        self.assertEqual(filled_loose, 1)
+        self.assertAlmostEqual(
+            float(o3d.geometry.TriangleMesh.get_surface_area(doubled)),
+            2 * before,
+            places=4,
+        )
+        # Protecting the prior's vertices leaves its rim alone.
+        kept, filled = fill_small_boundary_holes(
+            quad, max_loop_edges=60, protected_vertices=range(4)
+        )
+        self.assertEqual(filled, 0)
+        self.assertEqual(len(np.asarray(kept.triangles)), 2)
+        self.assertAlmostEqual(
+            float(o3d.geometry.TriangleMesh.get_surface_area(kept)),
+            before,
+            places=4,
+        )
+
+    def test_hole_fill_still_fills_surface_holes_with_priors_protected(self):
+        """Protecting prior vertices must not disable real hole filling."""
+        import open3d as o3d
+
+        from vbr.geometry import fill_small_boundary_holes
+
+        # Vertices 0-3 are the prior (protected); 4-6 bound a real 3-edge
+        # hole punched in a surface patch, so the loop touches a surface
+        # vertex and must still be filled.
+        vertices = np.asarray(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0],
+             [5.0, 0.0, 0.0], [6.0, 0.0, 0.0], [5.5, 0.0, 1.0]]
+        )
+        mesh = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(vertices),
+            # prior quad + a surface triangle missing its third face
+            o3d.utility.Vector3iVector(
+                np.asarray([[0, 1, 2], [0, 2, 3], [4, 5, 6]])
+            ),
+        )
+        _, filled = fill_small_boundary_holes(
+            mesh, max_loop_edges=60, protected_vertices=range(4)
+        )
+        self.assertEqual(filled, 1)
+
+    def test_build_mesh_reports_prior_survival_ratio(self):
+        """The report must show whether the priors reached the final mesh.
+
+        A ratio above ~1.3 means a coincident duplicate layer; far below 1.0
+        means the small-component filter ate the priors. Neither was visible
+        in geometry_report.json, which is why the P0 bug survived so long.
+        """
+        import open3d as o3d
+
+        from vbr.geometry import build_mesh
+
+        rng = np.random.default_rng(7)
+        x, z = np.meshgrid(np.linspace(-1.5, 1.5, 36), np.linspace(-1.5, 1.5, 36))
+        y = -0.3 * np.exp(-(x**2 + z**2))
+        points = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
+        colors = np.full_like(points, 0.6)
+        with tempfile.TemporaryDirectory() as directory:
+            report = build_mesh(
+                points,
+                colors,
+                Path(directory),
+                {"use_tsdf": False, "poisson_depth": 6,
+                 "mesh_min_component_triangles": 10,
+                 "footprint_wall_fallback": True},
+                reconstruction_path=None,
+            )
+        survival = report["prior_survival"]
+        self.assertGreater(survival["structural_area_m2"], 0.0)
+        self.assertGreater(survival["prior_triangles_in_combined"], 0)
+        # Priors intact: no deletion, no coincident duplicate layer.
+        self.assertGreater(survival["ratio"], 0.95)
+        self.assertLess(survival["ratio"], 1.05)
+        # The combined-level hole fill must not be inventing prior area.
+        self.assertLess(survival["area_added_by_hole_fill_m2"], 1.0)
+
+    def test_denoise_filter_keeps_large_components_only(self):
+        """Micro-fragment filter drops airborne islands, keeps the main body.
+
+        Thousands of tiny TSDF islands are what makes the raw baseline render
+        sparkle; the filter must remove them without touching large pieces.
+        """
+        import open3d as o3d
+
+        from tools.denoise_baseline_mesh import filter_components
+
+        # A dense box (main body) plus 5 tiny tetrahedra floating nearby.
+        main = o3d.geometry.TriangleMesh.create_box(1.0, 1.0, 1.0)
+        main = main.subdivide_midpoint(4)  # 768 triangles
+        scene = main
+        for offset in range(5):
+            fragment = o3d.geometry.TriangleMesh.create_tetrahedron()
+            fragment.translate([5.0 + offset, 5.0, 5.0])
+            scene = scene + fragment
+        filtered, stats = filter_components(scene, min_triangles=300)
+        self.assertEqual(stats["components_before"], 6)
+        self.assertEqual(stats["components_after"], 1)
+        self.assertEqual(stats["dropped_components"], 5)
+        self.assertEqual(len(filtered.triangles), len(main.triangles))
+        self.assertTrue(filtered.has_vertex_colors() is False)
+
+    def test_regularize_flattens_rippled_wall_and_normals(self):
+        """A rippled wall must come out flat, with normals aligned to it.
+
+        Ripples on reconstructed walls shade as potholes under a directional
+        light even after vertex snapping; the normal blend is what fixes the
+        shading. Both halves of ``regularize`` are checked here.
+        """
+        import open3d as o3d
+
+        from tools.regularize_planes import regularize
+
+        # Wall plane x = 0: a 2 m x 2 m grid at x in [-6mm, +6mm] ripple,
+        # plus floor/ceiling slabs so plane fitting has room height.
+        n = 40
+        y, z = np.meshgrid(
+            np.linspace(-1.0, 1.0, n), np.linspace(-0.8, 0.8, n)
+        )
+        ripple = 0.006 * np.sin(12.0 * np.pi * y) * np.cos(9.0 * np.pi * z)
+        wall = np.column_stack([ripple.ravel(), y.ravel(), z.ravel()])
+        wall_faces = []
+        for row in range(n - 1):
+            for column in range(n - 1):
+                a = row * n + column
+                wall_faces.append([a, a + 1, a + n + 1])
+                wall_faces.append([a, a + n + 1, a + n])
+        wall_faces = np.asarray(wall_faces)
+        mesh = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(wall), o3d.utility.Vector3iVector(wall_faces)
+        )
+        floor = o3d.geometry.TriangleMesh.create_box(4.0, 0.1, 4.0)
+        floor.translate([-2.0, -0.9, -2.0])
+        ceiling = o3d.geometry.TriangleMesh.create_box(4.0, 0.1, 4.0)
+        ceiling.translate([-2.0, 0.8, -2.0])
+        mesh = mesh + floor + ceiling
+        mesh.compute_vertex_normals()
+        # Perturb the normals the way real reconstruction noise does: a
+        # directional light on jittery normals shades the ripples as
+        # potholes regardless of how flat the positions are.
+        rng = np.random.default_rng(4)
+        normals = np.asarray(mesh.vertex_normals).copy()
+        jitter = rng.normal(scale=0.25, size=normals.shape)
+        normals += jitter
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+        mesh.vertex_normals = o3d.utility.Vector3dVector(normals)
+
+        def wall_stats(target):
+            vertices = np.asarray(target.vertices)
+            normals = np.asarray(target.vertex_normals)
+            on_wall = np.abs(vertices[:, 0]) < 0.05
+            residual = vertices[on_wall, 0]
+            # Plane normal is +-x; |n_x| is the alignment strength.
+            alignment = np.abs(normals[on_wall, 0])
+            return (
+                float(np.sqrt((residual ** 2).mean())),
+                float(np.mean(alignment)),
+            )
+
+        rms_before, align_before = wall_stats(mesh)
+        result, report = regularize(
+            mesh,
+            gravity=np.array([0.0, 1.0, 0.0]),
+            cfg={
+                "band": 0.05,
+                "max_shift": 0.02,
+                "normal_tolerance_deg": 45.0,
+                "normal_pull_weight": 0.95,
+                "plane_threshold": 0.02,
+                "min_plane_points": 200,
+                "max_planes": 6,
+            },
+        )
+        rms_after, align_after = wall_stats(result)
+        self.assertLess(rms_after, rms_before * 0.5)
+        # Alignment is a cosine-like score capped at 1; require a clear move
+        # toward the plane rather than a fixed absolute gain.
+        self.assertGreater(align_after, align_before)
+        self.assertGreater(align_after, 0.95)
+        self.assertGreater(report["normals_regularized"], 0)
+
 
 class MaskTests(unittest.TestCase):
     def test_original_mask_is_padded_into_model_space(self):

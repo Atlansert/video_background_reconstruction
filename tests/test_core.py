@@ -495,6 +495,31 @@ class GeometryTests(unittest.TestCase):
         self.assertTrue(np.all(colors[:, 0] > 0.9))   # red channel high
         self.assertTrue(np.all(colors[:, 2] < 0.1))
 
+    def test_denoise_filter_keeps_large_components_only(self):
+        """Micro-fragment filter drops airborne islands, keeps the main body.
+
+        Thousands of tiny TSDF islands are what makes the raw baseline render
+        sparkle; the filter must remove them without touching large pieces.
+        """
+        import open3d as o3d
+
+        from tools.denoise_baseline_mesh import filter_components
+
+        # A dense box (main body) plus 5 tiny tetrahedra floating nearby.
+        main = o3d.geometry.TriangleMesh.create_box(1.0, 1.0, 1.0)
+        main = main.subdivide_midpoint(4)  # 768 triangles
+        scene = main
+        for offset in range(5):
+            fragment = o3d.geometry.TriangleMesh.create_tetrahedron()
+            fragment.translate([5.0 + offset, 5.0, 5.0])
+            scene = scene + fragment
+        filtered, stats = filter_components(scene, min_triangles=300)
+        self.assertEqual(stats["components_before"], 6)
+        self.assertEqual(stats["components_after"], 1)
+        self.assertEqual(stats["dropped_components"], 5)
+        self.assertEqual(len(filtered.triangles), len(main.triangles))
+        self.assertTrue(filtered.has_vertex_colors() is False)
+
 
 class MaskTests(unittest.TestCase):
     def test_original_mask_is_padded_into_model_space(self):

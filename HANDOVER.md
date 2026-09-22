@@ -70,6 +70,20 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 - Release **`vggt-slam-baseline-20260922`**（2026-09-22 新建）：VGGT-SLAM 基线漫游视频 3 版
   - 页面：https://github.com/Atlansert/video_background_reconstruction/releases/tag/vggt-slam-baseline-20260922
   - `trajectory_video_raw_slam.mp4`（原始，含空气噪点）、`trajectory_video_denoised.mp4`（去噪）、`trajectory_video_regularized.mp4`（+墙面正则化，推荐）
+- Release **`p0-prior-fix-20260922`**（2026-09-22 新建）：P0 结构先验面修复的几何对比漫游（**只含 mp4，便于直接查看**）
+  - 页面：https://github.com/Atlansert/video_background_reconstruction/releases/tag/p0-prior-fix-20260922
+  - `walkthrough_p0_fixed.mp4`（修复后生产几何）、`walkthrough_p0_before.mp4`（修复前，先验被删）
+  - `compare_p0_2panel.mp4`（BEFORE ｜ AFTER）、`compare_p0_3panel.mp4`（BEFORE ｜ CONTROL ｜ AFTER）
+  - 全部由同一条 SLAM 相机轨迹渲染、均启用 `--ceiling-clearance 0.35`（渲染口径一致）
+
+> **渲染陷阱**：`tools/render_trajectory_video.py` 从 `--run-dir` 下的 `geometry_report.json`
+> 读天花板高度来做高机位钳制；若该文件不存在，工具只打印 `ceiling clamp skipped` 并照常出片，
+> 结果是 1450–1650 段出现近乎全黑画面（实测帧均值 7.5–22.1）。做对比渲染前务必确认该文件在，
+> 否则黑屏会被误读成几何缺陷。
+>
+> **ffmpeg 陷阱**：conda `vbr` 环境里的 `ffmpeg` **不含 libx264**（`ffmpeg -encoders | grep -c libx264` = 0），
+> 直接调用会报 `Encoder not found`；须用 `/usr/bin/ffmpeg`（项目内 `vbr/models/inpainting.py::_resolve_ffmpeg`
+> 已按此逻辑挑选）。
 
 ---
 

@@ -1279,11 +1279,19 @@ def _boundary_loops(mesh):
     return loops
 
 
-def fill_small_boundary_holes(mesh, max_loop_edges=60):
+def fill_small_boundary_holes(mesh, max_loop_edges=60, protected_vertices=None):
     """Fan-fill boundary loops whose perimeter is small enough to be noise.
 
     Big loops (doorways, stairs openings) are left untouched. Returns the
     updated mesh and the number of filled loops.
+
+    ``protected_vertices`` names the structural prior quads by vertex index.
+    A prior is a flat 2-triangle sheet, so its own four-edge rim looks
+    exactly like a small artifact hole; ear-clipping it laid a coincident
+    copy of the quad on top of itself, doubling the floor and ceiling area
+    (44.59 -> 89.18 m2) and z-fighting in the render. A loop made up
+    entirely of protected vertices is a prior's own rim, not a hole. Real
+    TSDF holes are bounded by surface vertices, so they are still filled.
 
     The mesh is rebuilt once at the end: appending via ``mesh += ...`` while
     the addend's vertex buffer aliases ``mesh.vertices`` (a numpy view)
@@ -1293,7 +1301,17 @@ def fill_small_boundary_holes(mesh, max_loop_edges=60):
 
     loops = _boundary_loops(mesh)
     filled = 0
-    closed_loops = [loop for loop in loops if len(loop) <= max_loop_edges]
+    protected = (
+        set()
+        if protected_vertices is None
+        else {int(vertex) for vertex in protected_vertices}
+    )
+    closed_loops = [
+        loop
+        for loop in loops
+        if len(loop) <= max_loop_edges
+        and not (protected and all(int(vertex) in protected for vertex in loop))
+    ]
     original_vertices = np.asarray(mesh.vertices).copy()
     original_faces = np.asarray(mesh.triangles)
     original_colors = (
@@ -1393,6 +1411,43 @@ def clean_mesh(mesh, cfg):
     return mesh, stats
 
 
+def _prior_survival_report(combined, structural, surface_vertex_count):
+    """Measure how much structural prior area reached the final mesh.
+
+    ``build_mesh`` appends the priors after the dense surface, so a triangle
+    belongs to a prior when all three of its vertex indices are at or above
+    ``surface_vertex_count``. Comparing that area with the area the priors
+    were emitted with guards the P0 deletion failure mode (priors filtered
+    away, ratio well below 1.0), which the rest of the report could not show:
+    ``structural_vertices`` only counts the emitted priors, not the ones that
+    survived into the delivered mesh.
+
+    Call this while the append offset is still valid — the combined-level
+    hole filler rebuilds the vertex array and may renumber it.
+    """
+    faces = np.asarray(combined.triangles)
+    vertices = np.asarray(combined.vertices, dtype=float)
+    prior_faces = np.zeros((0, 3), dtype=np.int64)
+    if len(faces):
+        prior_faces = faces[(faces >= surface_vertex_count).all(axis=1)]
+    prior_area = 0.0
+    if len(prior_faces):
+        triangles = vertices[prior_faces]
+        cross = np.cross(
+            triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
+        )
+        prior_area = float(0.5 * np.linalg.norm(cross, axis=1).sum())
+    structural_area = float(structural.get_surface_area())
+    return {
+        "structural_area_m2": round(structural_area, 4),
+        "prior_area_in_combined_m2": round(prior_area, 4),
+        "prior_triangles_in_combined": int(len(prior_faces)),
+        "ratio": (
+            round(prior_area / structural_area, 4) if structural_area > 1e-9 else None
+        ),
+    }
+
+
 def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, opening_hints=None,
                texture_frames=None, texture_max_frames=48):
     """Fit the room, then optionally texture it from inpainted video frames.
@@ -1472,15 +1527,33 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, openin
         surface = surface.simplify_quadric_decimation(target_triangles)
     surface, mesh_clean = clean_mesh(surface, cfg)
 
+    # ``surface + structural`` appends the prior vertices after the surface
+    # ones, so every index >= this offset belongs to a prior quad. The hole
+    # filler uses that to leave the priors' own rims open instead of capping
+    # each quad with a coincident duplicate of itself.
+    surface_vertex_count = len(np.asarray(surface.vertices))
     combined = surface + structural
     combined.remove_degenerate_triangles()
     combined.remove_duplicated_triangles()
     combined.remove_non_manifold_edges()
     combined.compute_vertex_normals()
+    # Measured here, while the priors are still the vertex tail.
+    prior_survival = _prior_survival_report(combined, structural, surface_vertex_count)
+    area_before_hole_fill = float(combined.get_surface_area())
     combined, prior_holes = fill_small_boundary_holes(
-        combined, max_loop_edges=int(cfg.get("mesh_fill_hole_max_edges", 60))
+        combined,
+        max_loop_edges=int(cfg.get("mesh_fill_hole_max_edges", 60)),
+        protected_vertices=range(
+            surface_vertex_count, len(np.asarray(combined.vertices))
+        ),
     )
     mesh_clean["holes_filled"] = int(mesh_clean.get("holes_filled", 0)) + prior_holes
+    # Capping a prior rim instead of skipping it laid a second copy of that
+    # quad on top of the first, so the regression showed up as ~a whole prior
+    # plane of extra area appearing here (floor alone: 44.59 m2).
+    prior_survival["area_added_by_hole_fill_m2"] = round(
+        float(combined.get_surface_area()) - area_before_hole_fill, 4
+    )
 
     texture_report = None
     if texture_frames:
@@ -1532,6 +1605,7 @@ def build_mesh(points, colors, output_dir, cfg, reconstruction_path=None, openin
         "combined_vertices": len(combined.vertices),
         "combined_triangles": len(combined.triangles),
         "mesh_clean": mesh_clean,
+        "prior_survival": prior_survival,
         "texture": texture_report,
         "pruned_surface_triangles": pruned_triangles,
         "tsdf_error": tsdf_error,

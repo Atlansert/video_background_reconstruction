@@ -495,6 +495,106 @@ class GeometryTests(unittest.TestCase):
         self.assertTrue(np.all(colors[:, 0] > 0.9))   # red channel high
         self.assertTrue(np.all(colors[:, 2] < 0.1))
 
+    def test_prior_rim_is_not_capped_by_hole_fill(self):
+        """A prior quad's own rim must not be ear-clipped into a duplicate.
+
+        Regression (P0): the assembled mesh ran fill_small_boundary_holes,
+        which saw each flat 2-triangle prior's four-edge rim as an artifact
+        hole and capped it with a coincident copy of the same quad. The
+        floor alone went 44.59 -> 89.18 m2 and z-fought in the render.
+        """
+        import open3d as o3d
+
+        from vbr.geometry import fill_small_boundary_holes
+
+        quad = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(
+                np.asarray([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0],
+                            [4.0, 0.0, 4.0], [0.0, 0.0, 4.0]])
+            ),
+            o3d.utility.Vector3iVector(np.asarray([[0, 1, 2], [0, 2, 3]])),
+        )
+        before = float(o3d.geometry.TriangleMesh.get_surface_area(quad))
+        # With no protection the rim is filled and the area doubles.
+        doubled, filled_loose = fill_small_boundary_holes(quad, max_loop_edges=60)
+        self.assertEqual(filled_loose, 1)
+        self.assertAlmostEqual(
+            float(o3d.geometry.TriangleMesh.get_surface_area(doubled)),
+            2 * before,
+            places=4,
+        )
+        # Protecting the prior's vertices leaves its rim alone.
+        kept, filled = fill_small_boundary_holes(
+            quad, max_loop_edges=60, protected_vertices=range(4)
+        )
+        self.assertEqual(filled, 0)
+        self.assertEqual(len(np.asarray(kept.triangles)), 2)
+        self.assertAlmostEqual(
+            float(o3d.geometry.TriangleMesh.get_surface_area(kept)),
+            before,
+            places=4,
+        )
+
+    def test_hole_fill_still_fills_surface_holes_with_priors_protected(self):
+        """Protecting prior vertices must not disable real hole filling."""
+        import open3d as o3d
+
+        from vbr.geometry import fill_small_boundary_holes
+
+        # Vertices 0-3 are the prior (protected); 4-6 bound a real 3-edge
+        # hole punched in a surface patch, so the loop touches a surface
+        # vertex and must still be filled.
+        vertices = np.asarray(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0],
+             [5.0, 0.0, 0.0], [6.0, 0.0, 0.0], [5.5, 0.0, 1.0]]
+        )
+        mesh = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(vertices),
+            # prior quad + a surface triangle missing its third face
+            o3d.utility.Vector3iVector(
+                np.asarray([[0, 1, 2], [0, 2, 3], [4, 5, 6]])
+            ),
+        )
+        _, filled = fill_small_boundary_holes(
+            mesh, max_loop_edges=60, protected_vertices=range(4)
+        )
+        self.assertEqual(filled, 1)
+
+    def test_build_mesh_reports_prior_survival_ratio(self):
+        """The report must show whether the priors reached the final mesh.
+
+        A ratio above ~1.3 means a coincident duplicate layer; far below 1.0
+        means the small-component filter ate the priors. Neither was visible
+        in geometry_report.json, which is why the P0 bug survived so long.
+        """
+        import open3d as o3d
+
+        from vbr.geometry import build_mesh
+
+        rng = np.random.default_rng(7)
+        x, z = np.meshgrid(np.linspace(-1.5, 1.5, 36), np.linspace(-1.5, 1.5, 36))
+        y = -0.3 * np.exp(-(x**2 + z**2))
+        points = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
+        colors = np.full_like(points, 0.6)
+        with tempfile.TemporaryDirectory() as directory:
+            report = build_mesh(
+                points,
+                colors,
+                Path(directory),
+                {"use_tsdf": False, "poisson_depth": 6,
+                 "mesh_min_component_triangles": 10,
+                 "footprint_wall_fallback": True},
+                reconstruction_path=None,
+            )
+        survival = report["prior_survival"]
+        self.assertGreater(survival["structural_area_m2"], 0.0)
+        self.assertGreater(survival["prior_triangles_in_combined"], 0)
+        # Priors intact: no deletion, no coincident duplicate layer.
+        self.assertGreater(survival["ratio"], 0.95)
+        self.assertLess(survival["ratio"], 1.05)
+        # The combined-level hole fill must not be inventing prior area.
+        self.assertLess(survival["area_added_by_hole_fill_m2"], 1.0)
+
     def test_denoise_filter_keeps_large_components_only(self):
         """Micro-fragment filter drops airborne islands, keeps the main body.
 

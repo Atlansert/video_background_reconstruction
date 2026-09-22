@@ -1,0 +1,21 @@
+{
+  "method": "videopainter",
+  "source_frames": 1799,
+  "down_sample_stride": 3,
+  "model_frames": 600,
+  "pad_frames": 0,
+  "output_frames": 584,
+  "fps_out": 9.99,
+  "window_frames": 49,
+  "window_stride": 29,
+  "num_inference_steps": 30,
+  "guidance_scale": 6.0,
+  "seed": 42,
+  "load_seconds": null,
+  "generate_seconds": 2467.073081970215,
+  "environment": "/data/lzx/video_background_reconstruction_vp/.conda-vp",
+  "upsample": "minterpolate",
+  "output": "/data/lzx/video_background_reconstruction_vp/outputs/001_sam31_slam/background_video.mp4",
+  "raw_output": "/data/lzx/video_background_reconstruction_vp/outputs/001_sam31_slam/videopainter/generated_modelfps.mp4",
+  "total_seconds": 3158.212390422821
+}

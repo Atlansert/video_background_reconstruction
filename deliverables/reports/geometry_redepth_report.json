@@ -123,7 +123,7 @@
     "pointcloud": "/data/lzx/video_background_reconstruction/outputs/001_sam31_slam/slam_bg/points_background.ply",
     "reconstruction": "/data/lzx/video_background_reconstruction/outputs/001_sam31_slam/slam_bg/points_background.npz",
     "trajectory": "/data/lzx/video_background_reconstruction/outputs/001_sam31_slam/slam_bg/trajectory_tum.txt",
-    "slam_elapsed_seconds": 4.936742305755615
+    "slam_elapsed_seconds": 6.080376625061035
   },
   "submap_scales": {
     "checked": true,
@@ -139,170 +139,179 @@
   },
   "geometry": {
     "gravity_down": [
-      -0.18991212283083864,
-      0.9814209665448158,
-      0.027317979903002252
+      -0.1899121228308386,
+      0.9814209665448157,
+      0.02731797990300225
     ],
     "planes": [
       {
         "normal": [
-          0.02066505201004729,
-          0.979321461133145,
-          0.20125215871504043
+          0.038621236586014004,
+          0.9793029986101706,
+          0.19868074138097877
         ],
-        "d": -1.6681827554040498,
-        "points": 220304,
-        "gravity_alignment": 0.962699873474948,
+        "d": -1.6622508916879253,
+        "points": 212393,
+        "gravity_alignment": 0.9592014109099871,
         "kind": "horizontal"
       },
       {
         "normal": [
-          0.084399513417009,
-          0.9697035142704687,
-          0.22924182983145744
+          -0.008520736650246863,
+          0.9795765079311747,
+          0.2008911699261625
         ],
-        "d": -1.89181587551432,
-        "points": 107221,
-        "gravity_alignment": 0.9419212931785772,
+        "d": -1.6442241423304798,
+        "points": 113095,
+        "gravity_alignment": 0.9684830553464732,
         "kind": "horizontal"
       },
       {
         "normal": [
-          0.9765524535584693,
-          0.18595049996072704,
-          0.10847910863973513
+          0.9808634074633353,
+          0.1884415108897836,
+          0.04895684702787139
         ],
-        "d": -4.64314819215179,
-        "points": 100910,
-        "gravity_alignment": 0.13340979257680421,
+        "d": -4.496747134587058,
+        "points": 96643,
+        "gravity_alignment": 0.2750704712529775,
         "kind": "vertical"
       },
       {
         "normal": [
-          0.04148357487780658,
-          0.9413447115610254,
-          0.33488691677855553
+          0.08925206631850109,
+          0.9744413001199717,
+          0.20615096719728773
         ],
-        "d": -1.7100359403276189,
-        "points": 80579,
-        "gravity_alignment": 0.9251256369667511,
+        "d": -1.7608456575465539,
+        "points": 84087,
+        "gravity_alignment": 0.9450187012022241,
         "kind": "horizontal"
       },
       {
         "normal": [
-          0.01076803079230151,
-          0.9799011952705089,
-          0.19919261286072887
+          -0.02634606740089948,
+          0.9621571998531974,
+          0.2712183760388696
         ],
-        "d": -1.7141936449094997,
-        "points": 109858,
-        "gravity_alignment": 0.9650921383892852,
+        "d": -0.9866698044650546,
+        "points": 78899,
+        "gravity_alignment": 0.9566938247822824,
         "kind": "horizontal"
       },
       {
         "normal": [
-          0.04334438106997416,
-          0.9657635454693443,
-          0.25577732282229904
+          -0.0019857448093309514,
+          0.9599424932560072,
+          0.28019005417215065
         ],
-        "d": -0.8636318651741763,
-        "points": 75605,
-        "gravity_alignment": 0.9465762885909877,
+        "d": -1.260937684925002,
+        "points": 75091,
+        "gravity_alignment": 0.9501390328397871,
         "kind": "horizontal"
       },
       {
         "normal": [
-          0.13887482873801243,
-          0.9680056549012248,
-          0.20899481816599744
+          0.17570911071686876,
+          0.9497844369464584,
+          0.2589127879101107
         ],
-        "d": -1.5157165204354686,
-        "points": 72352,
-        "gravity_alignment": 0.9293563481630926,
+        "d": -1.2632810020734249,
+        "points": 71093,
+        "gravity_alignment": 0.9058420442370161,
         "kind": "horizontal"
       },
       {
         "normal": [
-          0.17738450964417993,
-          0.9591807080161965,
-          0.22024328617654204
+          0.02374397414616973,
+          0.9848346544288127,
+          0.17186310577266714
         ],
-        "d": -1.032515043722827,
-        "points": 69751,
-        "gravity_alignment": 0.9136891904341047,
+        "d": -1.6263415833681314,
+        "points": 73966,
+        "gravity_alignment": 0.9667230627713805,
         "kind": "horizontal"
       },
       {
         "normal": [
-          0.22845351191696306,
-          0.9450783626490136,
-          0.23374319528804613
+          0.026321812427743035,
+          0.9715493566830673,
+          0.23536994225524333
         ],
-        "d": -1.428641132168453,
-        "points": 67105,
-        "gravity_alignment": 0.8905190206266185,
+        "d": -1.4621761177133918,
+        "points": 73104,
+        "gravity_alignment": 0.9549299087592815,
         "kind": "horizontal"
       },
       {
         "normal": [
-          0.15477587652826244,
-          0.9608754324755342,
-          0.2297016136379175
+          -0.019035573423147465,
+          0.9623718877580222,
+          0.27106825080690017
         ],
-        "d": -1.5413388455126826,
-        "points": 64471,
-        "gravity_alignment": 0.9199044644598684,
+        "d": -0.856359887062613,
+        "points": 65727,
+        "gravity_alignment": 0.9555120714450142,
         "kind": "horizontal"
       },
       {
         "normal": [
-          -0.029157748495600884,
-          0.9589509947833067,
-          0.2820688130665523
+          0.007383011587487437,
+          0.9613777922236518,
+          0.2751331164310762
         ],
-        "d": -1.4409345141200713,
-        "points": 62280,
-        "gravity_alignment": 0.9543775722497285,
+        "d": -1.3510405059126285,
+        "points": 63628,
+        "gravity_alignment": 0.9496302796007074,
         "kind": "horizontal"
       },
       {
         "normal": [
-          0.0363596209212495,
-          0.9800522864217253,
-          0.19538550059820672
+          0.22210733915572645,
+          0.9327315861232602,
+          0.2840424583388027
         ],
-        "d": -0.18575920710606064,
-        "points": 59480,
-        "gravity_alignment": 0.960276266588667,
+        "d": -1.7380174022740937,
+        "points": 58988,
+        "gravity_alignment": 0.8809809246730947,
         "kind": "horizontal"
       }
     ],
     "room": {
-      "ceiling_level": -1.8229201062192861,
-      "floor_level": 0.893926523739093,
-      "room_height": 2.716846629958379,
-      "wall_count": 1,
-      "wall_source": "ransac",
-      "wall_openings": 6,
+      "ceiling_level": -1.822920106219286,
+      "floor_level": 0.8939265237390929,
+      "room_height": 2.7168466299583787,
+      "wall_count": 3,
+      "wall_source": "ransac+plan",
+      "wall_openings": 28,
       "footprint": [
-        -9.713310196280865,
-        -1.1368454827466172,
+        -9.713310196280867,
+        -0.9202019414812129,
         -4.665987111337721,
         1.4425603839235281
       ]
     },
     "surface_method": "tsdf",
-    "surface_vertices": 292519,
-    "structural_vertices": 30,
-    "combined_vertices": 151469,
-    "combined_triangles": 249999,
+    "surface_vertices": 256402,
+    "structural_vertices": 74,
+    "combined_vertices": 256476,
+    "combined_triangles": 437794,
     "mesh_clean": {
-      "components_before": 3416,
+      "components_before": 3167,
       "components_after": 45,
-      "largest_fraction": 0.9122698572283057,
-      "boundary_loops": 1049,
-      "holes_filled": 1000
+      "largest_fraction": 0.8891753092784651,
+      "boundary_loops": 1310,
+      "holes_filled": 1435
     },
+    "prior_survival": {
+      "structural_area_m2": 167.4556,
+      "prior_area_in_combined_m2": 167.4556,
+      "prior_triangles_in_combined": 52,
+      "ratio": 1.0,
+      "area_added_by_hole_fill_m2": 1.1249
+    },
+    "texture": null,
+    "pruned_surface_triangles": 0,
     "tsdf_error": null,
     "glb_error": null
   },

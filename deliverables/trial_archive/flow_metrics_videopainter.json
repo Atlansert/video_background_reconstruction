@@ -1,0 +1,10 @@
+{
+  "video": "/data/lzx/video_background_reconstruction_vp/outputs/001_sam31_slam/background_video.mp4",
+  "frames": 1799,
+  "sampled_pairs": 450,
+  "warping_error_mean": 1.6787802656049866,
+  "warping_error_p95": 3.3565675139427182,
+  "warping_error_inside_mean": 1.7960712784197594,
+  "warping_error_outside_mean": 1.5275951471020623,
+  "mask_jitter_mean": 0.01770156035665295
+}

@@ -1,0 +1,12 @@
+{
+  "method": "effecterase",
+  "environment": "effecterase",
+  "chunks": 30,
+  "chunk_frames": 81,
+  "overlap": 20,
+  "resolution": "480x832",
+  "num_inference_steps": 30,
+  "output": "/data/lzx/video_background_reconstruction_ee/outputs/001_sam31_slam/experiments/effecterase_full/background_video.mp4",
+  "raw_output": "/data/lzx/video_background_reconstruction_ee/outputs/001_sam31_slam/experiments/effecterase_full/effecterase/combined.mp4",
+  "elapsed_seconds": 252.4
+}

@@ -75,6 +75,12 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
   - `walkthrough_p0_fixed.mp4`（修复后生产几何）、`walkthrough_p0_before.mp4`（修复前，先验被删）
   - `compare_p0_2panel.mp4`（BEFORE ｜ AFTER）、`compare_p0_3panel.mp4`（BEFORE ｜ CONTROL ｜ AFTER）
   - 全部由同一条 SLAM 相机轨迹渲染、均启用 `--ceiling-clearance 0.35`（渲染口径一致）
+- Release **`regularize-fix-20260923`**（2026-09-23 新建）：墙面正则化修复的对比漫游（5 个 asset）
+  - 页面：https://github.com/Atlansert/video_background_reconstruction/releases/tag/regularize-fix-20260923
+  - `walkthrough_regularized_fixed.mp4` / `walkthrough_regularized_shipped.mp4`
+  - `compare_regularize_2panel.mp4`（发布版 ｜ 修复版）、`compare_regularize_3panel.mp4`（发布版 ｜ 未正则化参照 ｜ 修复版）、`reg_shipped_vs_fixed.jpg`
+  - 修复内容：法线混合改为"跨平面累加单一目标 + 位移后重算 + 偏离封顶"，翻转法线 1093→0、偏离均值 10.14°→1.63°
+  - **验收勿用整帧高频能量**：发布版该指标更低（4.4898 vs 修复版 4.7150，未正则化参照 5.1910）是因为它压掉了真实表面起伏，指标奖励过度平滑。请看逐墙指标或直接看视频。详见 `deliverables/reports/regularize_fix/REPORT.md`
 
 > **渲染陷阱**：`tools/render_trajectory_video.py` 从 `--run-dir` 下的 `geometry_report.json`
 > 读天花板高度来做高机位钳制；若该文件不存在，工具只打印 `ceiling clamp skipped` 并照常出片，

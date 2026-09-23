@@ -16,6 +16,14 @@ snap vertices *toward* the plane inside a soft band:
 - vertices whose normals deviate from the plane normal are skipped
   (``--normal-tolerance``), preserving decorative elements mounted on walls.
 
+Normal side (``--normal-pull-weight``): one weighted target normal is
+accumulated per vertex across every plane it belongs to, blended ONCE, oriented
+from the true geometric normal, and capped by ``--max-normal-drift-deg``. An
+earlier version blended per plane in a loop, so a vertex inside two or three
+overlapping bands (20.7% of them) was blended repeatedly toward different
+normals and ended up matching none -- 0.47% came out flipped (dark patches) and
+33% disagreed with the real surface, which added speckle to some walls.
+
 Snapping is a blend: new = old + pull * (projection - old), pull ramping from
 1 at the plane core to 0 at the band edge. No vertex is removed, so color and
 triangle count stay identical.
@@ -39,23 +47,34 @@ from vbr.cli import PROJECT_ROOT
 from vbr.geometry import estimate_gravity, fit_planes
 
 
+def _geometric_normals(vertices, faces):
+    """Vertex normals implied by the current triangles (area weighted)."""
+    import open3d as o3d
+
+    mesh = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(np.asarray(vertices, dtype=np.float64)),
+        o3d.utility.Vector3iVector(np.asarray(faces)),
+    )
+    mesh.compute_vertex_normals()
+    return np.asarray(mesh.vertex_normals, dtype=np.float64)
+
+
 def regularize(mesh, gravity, cfg):
     import open3d as o3d
 
     vertices = np.asarray(mesh.vertices, dtype=np.float64).copy()
-    normals = (
-        np.asarray(mesh.vertex_normals, dtype=np.float64)
-        if mesh.has_vertex_normals()
-        else None
-    )
-    if normals is None or len(normals) != len(vertices):
-        mesh.compute_vertex_normals()
-        normals = np.asarray(mesh.vertex_normals, dtype=np.float64)
+    faces = np.asarray(mesh.triangles)
 
     band = float(cfg["band"])
     max_shift = float(cfg["max_shift"])
     normal_tolerance = float(np.cos(np.radians(cfg["normal_tolerance_deg"])))
     normal_pull_weight = float(cfg.get("normal_pull_weight", 0.0))
+    # Shading normals default to the snap radius: rewriting a normal where the
+    # geometry did not move makes the shade disagree with the surface, which is
+    # what added speckle to walls this polish was meant to smooth.
+    normal_band = float(cfg.get("normal_band") or max_shift)
+    max_drift_deg = float(cfg.get("max_normal_drift_deg", 30.0))
+
     planes = fit_planes(
         vertices,
         gravity,
@@ -64,61 +83,30 @@ def regularize(mesh, gravity, cfg):
         max_planes=int(cfg["max_planes"]),
     )
 
-    out_normals = normals.copy()
+    geometric = _geometric_normals(vertices, faces)
     moved_total = 0
-    normalized_total = 0
     plane_report = []
-    for index, plane in enumerate(planes):
+
+    # ---- phase 1: positions -------------------------------------------------
+    for plane in planes:
         normal = np.asarray(plane["normal"], dtype=np.float64)
         offset = float(plane["d"])
         distance = vertices @ normal + offset
-        # Two overlapping selections:
-        # - snap: vertices close enough that pulling them onto the plane is a
-        #   small correction (|distance| < max_shift).
-        # - regularize: the whole band. A vertex 3-6 cm off the fitted plane
-        #   should not be repositioned, but its normal still belongs to this
-        #   wall and blending it toward the plane normal is safe. Limiting the
-        #   normal blend to the snap set (an earlier bug) left the very
-        #   ripples that shade as potholes untouched.
         in_band = np.abs(distance) < band
         if normal_tolerance > 0:
-            in_band &= np.abs(normals @ normal) >= normal_tolerance
+            in_band &= np.abs(geometric @ normal) >= normal_tolerance
         snap = in_band & (np.abs(distance) < max_shift)
-        if not in_band.any():
-            plane_report.append(
-                {"kind": plane["kind"], "points": plane["points"], "moved": 0}
-            )
-            continue
-        # Fade: 1 at the plane core, 0 at the band edge.
-        pull = 1.0 - (np.abs(distance[in_band]) / band)
-
         if snap.any():
-            snap_pull = pull[np.abs(distance[in_band]) < max_shift]
-            shift = -distance[snap] * snap_pull
-            shift = np.clip(shift, -max_shift, max_shift)
+            # Fade: 1 at the plane core, 0 at the band edge, so a genuine
+            # protrusion near the plane is not torn off.
+            pull = 1.0 - (np.abs(distance[snap]) / band)
+            shift = np.clip(-distance[snap] * pull, -max_shift, max_shift)
             before = float(np.sqrt((distance[snap] ** 2).mean()))
             vertices[snap] += shift[:, None] * normal[None]
-            after = float(
-                np.sqrt(((vertices[snap] @ normal + offset) ** 2).mean())
-            )
+            after = float(np.sqrt(((vertices[snap] @ normal + offset) ** 2).mean()))
             moved_total += int(snap.sum())
         else:
             before = after = 0.0
-
-        # Shading-side regularization: blend band-wide normals toward the
-        # plane normal with the same fade, so the wall shades as the flat
-        # surface it is.
-        if normal_pull_weight > 0:
-            signs = np.sign(
-                np.sum(out_normals[in_band] * normal[None], axis=1, keepdims=True)
-            ).reshape(-1, 1)
-            target = normal[None] * signs
-            weight = (pull * normal_pull_weight).reshape(-1, 1)
-            blended = out_normals[in_band] * (1.0 - weight) + target * weight
-            lengths = np.linalg.norm(blended, axis=1, keepdims=True)
-            out_normals[in_band] = blended / np.maximum(lengths, 1e-12)
-            normalized_total += int(in_band.sum())
-
         plane_report.append(
             {
                 "kind": plane["kind"],
@@ -129,9 +117,62 @@ def regularize(mesh, gravity, cfg):
             }
         )
 
+    # ---- phase 2: normals, measured against the surface as it now is --------
+    geometric = _geometric_normals(vertices, faces)
+    out_normals = geometric.copy()
+    normalized_total = 0
+
+    if normal_pull_weight > 0:
+        # One accumulated target per vertex. The previous version wrote the
+        # blend inside the plane loop, so a vertex inside two or three
+        # overlapping bands (20.7% of them) was blended repeatedly and the last
+        # plane won -- a blend-of-blends matching no real surface.
+        target_sum = np.zeros_like(vertices)
+        weight_sum = np.zeros(len(vertices))
+        for plane in planes:
+            normal = np.asarray(plane["normal"], dtype=np.float64)
+            offset = float(plane["d"])
+            distance = vertices @ normal + offset
+            mask = np.abs(distance) < normal_band
+            if normal_tolerance > 0:
+                mask &= np.abs(geometric @ normal) >= normal_tolerance
+            if not mask.any():
+                continue
+            fade = 1.0 - np.abs(distance[mask]) / normal_band
+            # Orientation from the TRUE surface normal. Taking it from an
+            # already-blended value flipped normals on geometry that sits
+            # near-perpendicular to the plane.
+            signs = np.sign(geometric[mask] @ normal).reshape(-1, 1)
+            signs[signs == 0] = 1.0
+            weight = (fade * normal_pull_weight).reshape(-1, 1)
+            target_sum[mask] += normal[None] * signs * weight
+            weight_sum[mask] += weight[:, 0]
+
+        active = weight_sum > 0
+        if active.any():
+            target = target_sum[active] / weight_sum[active][:, None]
+            target /= np.maximum(np.linalg.norm(target, axis=1, keepdims=True), 1e-12)
+            weight = np.clip(weight_sum[active], 0.0, 1.0).reshape(-1, 1)
+            blended = geometric[active] * (1.0 - weight) + target * weight
+            blended /= np.maximum(np.linalg.norm(blended, axis=1, keepdims=True), 1e-12)
+            # Cap against the CURRENT surface normal; beyond the cap the honest
+            # geometric normal is kept, so a shading normal can never end up
+            # opposing its own triangle.
+            limit = float(np.cos(np.radians(max_drift_deg)))
+            drift_dot = np.einsum("ij,ij->i", blended, geometric[active])
+            beyond = drift_dot < limit
+            if beyond.any():
+                blended[beyond] = geometric[active][beyond]
+            out_normals[active] = blended
+            normalized_total = int(active.sum())
+
+    final_dot = np.einsum("ij,ij->i", out_normals, geometric)
+    flipped = int((final_dot < 0.0).sum())
+    drift_deg = np.degrees(np.arccos(np.clip(np.abs(final_dot), -1.0, 1.0)))
+
     result = o3d.geometry.TriangleMesh(
         o3d.utility.Vector3dVector(vertices),
-        o3d.utility.Vector3iVector(np.asarray(mesh.triangles)),
+        o3d.utility.Vector3iVector(faces),
     )
     if mesh.has_vertex_colors():
         result.vertex_colors = mesh.vertex_colors
@@ -145,6 +186,12 @@ def regularize(mesh, gravity, cfg):
         "band": band,
         "max_shift": max_shift,
         "normal_pull_weight": normal_pull_weight,
+        "normal_band": normal_band,
+        "max_normal_drift_deg": max_drift_deg,
+        "flipped_normals": flipped,
+        "normal_drift_mean_deg": float(drift_deg.mean()),
+        "normal_drift_p90_deg": float(np.percentile(drift_deg, 90)),
+        "normal_drift_max_deg": float(drift_deg.max()),
     }
 
 
@@ -169,6 +216,14 @@ def main():
     parser.add_argument("--plane-threshold", type=float, default=0.03)
     parser.add_argument("--min-plane-points", type=int, default=2000)
     parser.add_argument("--max-planes", type=int, default=12)
+    parser.add_argument("--normal-band", type=float, default=None,
+                        help="metres around a plane where vertex normals may be "
+                             "re-blended. Defaults to --max-shift, so the shading "
+                             "only changes where the geometry actually moved.")
+    parser.add_argument("--max-normal-drift-deg", type=float, default=30.0,
+                        help="cap on how far a shading normal may end up from the "
+                             "true surface normal; beyond it the geometric normal "
+                             "is kept (guards flips and blend-of-blends).")
     parser.add_argument("--iterations", type=int, default=3,
                         help="snap passes. One pass leaves vertices a fraction "
                              "of the way to the plane (the fade ramp stops "
@@ -196,6 +251,8 @@ def main():
                 "max_shift": args.max_shift,
                 "normal_tolerance_deg": args.normal_tolerance_deg,
                 "normal_pull_weight": args.normal_pull_weight,
+                "normal_band": args.normal_band,
+                "max_normal_drift_deg": args.max_normal_drift_deg,
                 "plane_threshold": args.plane_threshold,
                 "min_plane_points": args.min_plane_points,
                 "max_planes": args.max_planes,
@@ -223,6 +280,11 @@ def main():
         "band": args.band,
         "max_shift": args.max_shift,
         "normal_pull_weight": args.normal_pull_weight,
+        "normal_band": args.normal_band or args.max_shift,
+        "max_normal_drift_deg": args.max_normal_drift_deg,
+        "flipped_normals": rounds[-1].get("flipped_normals"),
+        "normal_drift_mean_deg": rounds[-1].get("normal_drift_mean_deg"),
+        "normal_drift_max_deg": rounds[-1].get("normal_drift_max_deg"),
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     o3d.io.write_triangle_mesh(str(args.out), result)

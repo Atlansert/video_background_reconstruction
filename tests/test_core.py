@@ -1,3 +1,4 @@
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -698,6 +699,134 @@ class GeometryTests(unittest.TestCase):
         self.assertGreater(align_after, align_before)
         self.assertGreater(align_after, 0.95)
         self.assertGreater(report["normals_regularized"], 0)
+
+    def test_regularize_never_flips_or_contradicts_the_surface(self):
+        """Shading normals must stay compatible with the surface they sit on.
+
+        Regression: the normal blend wrote its result once per plane inside the
+        plane loop, so a vertex claimed by several overlapping bands (20.7% of
+        the real mesh) was blended repeatedly and the last plane won. It also
+        took the orientation from an already-blended value and compared the
+        drift cap against normals computed before the positions moved. On the
+        released mesh that left 1093 flipped normals (0.47%) and 33% of vertices
+        disagreeing with their own triangles by >5 deg, which added speckle to
+        walls the polish was supposed to smooth.
+        """
+        import open3d as o3d
+
+        from tools.regularize_planes import regularize, _geometric_normals
+
+        # Two perpendicular rippled walls sharing an edge: every vertex along
+        # the join sits inside BOTH planes' bands, the exact overlap case.
+        n = 30
+        u, v = np.meshgrid(np.linspace(-1.0, 1.0, n), np.linspace(-0.8, 0.8, n))
+        ripple = 0.005 * np.sin(10.0 * np.pi * u) * np.cos(8.0 * np.pi * v)
+        wall_a = np.column_stack([ripple.ravel(), v.ravel(), u.ravel()])
+        wall_b = np.column_stack([u.ravel(), v.ravel(), ripple.ravel()])
+        faces = []
+        for row in range(n - 1):
+            for column in range(n - 1):
+                a = row * n + column
+                faces.append([a, a + 1, a + n + 1])
+                faces.append([a, a + n + 1, a + n])
+        faces = np.asarray(faces)
+        mesh = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(np.vstack([wall_a, wall_b])),
+            o3d.utility.Vector3iVector(np.vstack([faces, faces + len(wall_a)])),
+        )
+        mesh.compute_vertex_normals()
+        rng = np.random.default_rng(11)
+        normals = np.asarray(mesh.vertex_normals).copy()
+        normals += rng.normal(scale=0.25, size=normals.shape)
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+        mesh.vertex_normals = o3d.utility.Vector3dVector(normals)
+
+        result, report = regularize(
+            mesh,
+            gravity=np.array([0.0, 1.0, 0.0]),
+            cfg={
+                "band": 0.05,
+                "max_shift": 0.02,
+                "normal_tolerance_deg": 45.0,
+                "normal_pull_weight": 0.95,
+                "normal_band": 0.05,
+                "max_normal_drift_deg": 30.0,
+                "plane_threshold": 0.02,
+                "min_plane_points": 200,
+                "max_planes": 6,
+            },
+        )
+        out_normals = np.asarray(result.vertex_normals)
+        geometric = _geometric_normals(
+            np.asarray(result.vertices), np.asarray(result.triangles)
+        )
+        dot = np.einsum("ij,ij->i", out_normals, geometric)
+
+        # No shading normal may oppose its own surface.
+        self.assertEqual(int((dot < 0.0).sum()), 0)
+        self.assertEqual(report["flipped_normals"], 0)
+        # And none may exceed the configured drift cap.
+        worst = np.degrees(np.arccos(np.clip(np.abs(dot), -1.0, 1.0))).max()
+        self.assertLessEqual(worst, report["max_normal_drift_deg"] + 1e-6)
+        self.assertLessEqual(
+            report["normal_drift_p90_deg"], report["max_normal_drift_deg"]
+        )
+
+    def test_regularize_keeps_geometry_when_shading_band_differs(self):
+        """Overlapping bands must yield ONE blend, not a blend-of-blends.
+
+        A vertex inside two planes' bands used to absorb both targets in
+        sequence. The result must instead be a single normal no further from
+        the surface than the cap allows, and the tool must report how far it
+        drifted so the effect is visible in the run JSON.
+        """
+        import open3d as o3d
+
+        from tools.regularize_planes import regularize, _geometric_normals
+
+        # A gently rippled slab; both faces of the slab fall in one plane band.
+        n = 24
+        x, y = np.meshgrid(np.linspace(-1.0, 1.0, n), np.linspace(-1.0, 1.0, n))
+        z = 0.004 * np.sin(9.0 * np.pi * x) * np.sin(7.0 * np.pi * y)
+        top = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
+        bottom = np.column_stack([x.ravel(), y.ravel(), (z - 0.06).ravel()])
+        faces = []
+        for row in range(n - 1):
+            for column in range(n - 1):
+                a = row * n + column
+                faces.append([a, a + 1, a + n + 1])
+                faces.append([a, a + n + 1, a + n])
+        faces = np.asarray(faces)
+        mesh = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(np.vstack([top, bottom])),
+            o3d.utility.Vector3iVector(np.vstack([faces, faces + len(top)])),
+        )
+        mesh.compute_vertex_normals()
+
+        result, report = regularize(
+            mesh,
+            gravity=np.array([0.0, 0.0, 1.0]),
+            cfg={
+                "band": 0.05,
+                "max_shift": 0.03,
+                "normal_tolerance_deg": 45.0,
+                "normal_pull_weight": 0.9,
+                "plane_threshold": 0.02,
+                "min_plane_points": 100,
+                "max_planes": 6,
+            },
+        )
+        out_normals = np.asarray(result.vertex_normals)
+        geometric = _geometric_normals(
+            np.asarray(result.vertices), np.asarray(result.triangles)
+        )
+        dot = np.abs(np.einsum("ij,ij->i", out_normals, geometric))
+        # Every stored normal still agrees with the slab it belongs to.
+        self.assertGreater(float(dot.min()), math.cos(math.radians(30.0)))
+        # The report exposes the drift, not just a "did something" count.
+        self.assertIn("normal_drift_mean_deg", report)
+        self.assertIn("normal_band", report)
+        self.assertLessEqual(report["normal_drift_mean_deg"], 30.0)
 
 
 class MaskTests(unittest.TestCase):

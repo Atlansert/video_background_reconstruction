@@ -221,6 +221,25 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 | `vbr-slam` | Python 3.11 + VGGT-SLAM（`external/VGGT-SLAM`） |
 | `svor` | Python 3.10 + diffusers 0.31（SVOR 视频修复） |
 
+### 6.1a 磁盘布局（2026-09-23 迁移后）
+
+| 挂载 | 设备 | 容量 | 用途 |
+| --- | --- | --- | --- |
+| `/` | `/dev/nvme0n1p2` | 879G | 系统 + `/home`（**含 `/home/test/.cache`**） |
+| `/data` | `/dev/nvme1n1p1` | 7.0T | 项目与大数据 |
+
+`/home` 与 `/` 是**同一个文件系统**。2026-09-23 因根分区打到 100%（仅剩 3.1G），
+把 `/home/test/.cache` 下 7 个占空间的目录迁到 `/data/cache/` 并**留软链接**，
+根分区恢复到 **67%（277G 可用）**。
+
+- 已迁移：`pip` 与 6 个 modelscope 模型（Qwen2-VL-72B / Qwen3-32B / Qwen3.5-27B /
+  Qwen / Qwen3-Embedding-4B / Qwen3-8B-Base），合计约 276G
+- **未迁移**：`Qwen3___5-122B-A10B`（234G，正在被 vLLM 端口 8002 服务）、
+  `.cache/uv`（22G，正被 deer-flow 端口 8001 使用）
+- 迁移脚本与完整记录：`/data/cache/move_cache.sh`、`/data/cache/MIGRATION_NOTES.md`
+- **注意**：遇到 modelscope/工具报路径异常时，先确认它是否跟随符号链接。
+- `/data` 已用到 98%，继续迁移前先确认余量。
+
 ### 6.2 GPU
 - **优先 7 号卡**（0–3 被 vLLM 长期占用；4/5/6 可用）。推理前 `export CUDA_VISIBLE_DEVICES=7`。
 - 交接时 GPU 4–7 空闲。

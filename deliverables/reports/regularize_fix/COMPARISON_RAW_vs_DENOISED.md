@@ -18,7 +18,12 @@
 | --- | --- |
 | `compare_regularize_on_RAW.mp4` | 左：RAW（未正则化）｜右：RAW + 当前正则化 |
 | `compare_regularize_on_DENOISED.mp4` | 左：DENOISED（未正则化）｜右：DENOISED + 当前正则化 |
-| `walkthrough_RAW_regularized.mp4` | RAW + 正则化的完整单画面漫游 |
+| `walkthrough_RAW_regularized.mp4` | RAW + 当前正则化的完整单画面漫游 |
+| `walkthrough_DENOISED_regularized.mp4` | DENOISED + 当前正则化的完整单画面漫游 |
+
+> 早期本目录还放过 `compare_regularize_2panel.mp4` / `compare_regularize_3panel.mp4` /
+> `reg_shipped_vs_fixed.jpg`。它们由**过时代码**产生（旧 ramp，或只修法线的中间版本），
+> 两栏都与当前工具不一致，已删除；GitHub Release 上的同名 asset 也已一并替换。
 
 全部 1280×422（对比版）/ 960×540（单画面）、1799 帧 60s、h264+aac 含原音轨、
 faststart（`moov` 在前，网页可边下边播）。由同一条 SLAM 相机轨迹渲染，

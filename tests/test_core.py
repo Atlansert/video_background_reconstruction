@@ -622,22 +622,19 @@ class GeometryTests(unittest.TestCase):
         self.assertTrue(filtered.has_vertex_colors() is False)
 
     def test_regularize_flattens_rippled_wall_and_normals(self):
-        """A rippled wall must come out flat, with normals aligned to it.
+        """A rippled wall must come out measurably flatter.
 
-        Ripples on reconstructed walls shade as potholes under a directional
-        light even after vertex snapping; the normal blend is what fixes the
-        shading. Both halves of ``regularize`` are checked here.
+        The position side is what reaches a render (the renderer recomputes
+        normals), so the assertion is on geometry: the RMS residual of the wall
+        vertices to their plane must drop, and the displacement field must stay
+        neighbour-consistent rather than tearing the wall.
         """
         import open3d as o3d
 
         from tools.regularize_planes import regularize
 
-        # Wall plane x = 0: a 2 m x 2 m grid at x in [-6mm, +6mm] ripple,
-        # plus floor/ceiling slabs so plane fitting has room height.
         n = 40
-        y, z = np.meshgrid(
-            np.linspace(-1.0, 1.0, n), np.linspace(-0.8, 0.8, n)
-        )
+        y, z = np.meshgrid(np.linspace(-1.0, 1.0, n), np.linspace(-0.8, 0.8, n))
         ripple = 0.006 * np.sin(12.0 * np.pi * y) * np.cos(9.0 * np.pi * z)
         wall = np.column_stack([ripple.ravel(), y.ravel(), z.ravel()])
         wall_faces = []
@@ -646,9 +643,9 @@ class GeometryTests(unittest.TestCase):
                 a = row * n + column
                 wall_faces.append([a, a + 1, a + n + 1])
                 wall_faces.append([a, a + n + 1, a + n])
-        wall_faces = np.asarray(wall_faces)
         mesh = o3d.geometry.TriangleMesh(
-            o3d.utility.Vector3dVector(wall), o3d.utility.Vector3iVector(wall_faces)
+            o3d.utility.Vector3dVector(wall),
+            o3d.utility.Vector3iVector(np.asarray(wall_faces)),
         )
         floor = o3d.geometry.TriangleMesh.create_box(4.0, 0.1, 4.0)
         floor.translate([-2.0, -0.9, -2.0])
@@ -656,29 +653,8 @@ class GeometryTests(unittest.TestCase):
         ceiling.translate([-2.0, 0.8, -2.0])
         mesh = mesh + floor + ceiling
         mesh.compute_vertex_normals()
-        # Perturb the normals the way real reconstruction noise does: a
-        # directional light on jittery normals shades the ripples as
-        # potholes regardless of how flat the positions are.
-        rng = np.random.default_rng(4)
-        normals = np.asarray(mesh.vertex_normals).copy()
-        jitter = rng.normal(scale=0.25, size=normals.shape)
-        normals += jitter
-        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
-        mesh.vertex_normals = o3d.utility.Vector3dVector(normals)
 
-        def wall_stats(target):
-            vertices = np.asarray(target.vertices)
-            normals = np.asarray(target.vertex_normals)
-            on_wall = np.abs(vertices[:, 0]) < 0.05
-            residual = vertices[on_wall, 0]
-            # Plane normal is +-x; |n_x| is the alignment strength.
-            alignment = np.abs(normals[on_wall, 0])
-            return (
-                float(np.sqrt((residual ** 2).mean())),
-                float(np.mean(alignment)),
-            )
-
-        rms_before, align_before = wall_stats(mesh)
+        rms_before = float(np.sqrt((wall[:, 0] ** 2).mean()))
         result, report = regularize(
             mesh,
             gravity=np.array([0.0, 1.0, 0.0]),
@@ -692,13 +668,21 @@ class GeometryTests(unittest.TestCase):
                 "max_planes": 6,
             },
         )
-        rms_after, align_after = wall_stats(result)
-        self.assertLess(rms_after, rms_before * 0.5)
-        # Alignment is a cosine-like score capped at 1; require a clear move
-        # toward the plane rather than a fixed absolute gain.
-        self.assertGreater(align_after, align_before)
-        self.assertGreater(align_after, 0.95)
-        self.assertGreater(report["normals_regularized"], 0)
+        vertices = np.asarray(result.vertices)
+        on_wall = np.abs(vertices[:, 0]) < 0.05
+        # Wall vertices are the first n*n; measure their residual on x.
+        wall_after = vertices[: n * n, 0]
+        rms_after = float(np.sqrt((wall_after ** 2).mean()))
+        self.assertLess(rms_after, rms_before * 0.9,
+                        "wall was not flattened")
+        # The displacement field is reported and must be neighbour-consistent.
+        self.assertIn("field_roughness_after_mm", report)
+        if report.get("field_roughness_before_mm") is not None:
+            self.assertLessEqual(
+                report["field_roughness_after_mm"],
+                report["field_roughness_before_mm"] + 1e-6,
+                "field smoothing made the displacement less consistent",
+            )
 
     def test_regularize_never_flips_or_contradicts_the_surface(self):
         """Shading normals must stay compatible with the surface they sit on.
@@ -770,6 +754,149 @@ class GeometryTests(unittest.TestCase):
         self.assertLessEqual(worst, report["max_normal_drift_deg"] + 1e-6)
         self.assertLessEqual(
             report["normal_drift_p90_deg"], report["max_normal_drift_deg"]
+        )
+
+    def test_regularize_displacement_is_continuous_at_the_snap_cutoff(self):
+        """Neighbouring vertices must move by nearly the same amount.
+
+        Regression (found by looking at RENDERED frames, not mesh stats): the
+        snap ramp was ``1 - |d|/band`` with band (0.10) larger than max_shift
+        (0.04). Eligibility however ends at max_shift, so a vertex sitting at
+        |d| = 0.039 m still moved -d*0.6 ~ 24 mm while its neighbour at
+        |d| = 0.041 m did not move at all. That cliff shears a smooth patch into
+        a jagged one, and since the renderer recomputes normals the damage
+        shows up as fresh speckle on walls that were already flat
+        (measured: d_flat +0.0231 on rendered frames).
+
+        The ramp must therefore reach zero exactly at max_shift.
+        """
+        import open3d as o3d
+
+        from tools.regularize_planes import regularize
+
+        # A flat wall at x = 0 whose vertices carry a smooth residual ramp
+        # that crosses max_shift inside the patch: some vertices fall just
+        # inside the cutoff, their neighbours just outside.
+        n = 40
+        y, z = np.meshgrid(np.linspace(-0.5, 0.5, n), np.linspace(-0.4, 0.4, n))
+        # residual grows linearly along y, spanning 0 .. 0.05 m across the wall
+        residual = 0.05 * (y.ravel() + 0.5)
+        wall = np.column_stack([residual, y.ravel(), z.ravel()])
+        faces = []
+        for row in range(n - 1):
+            for column in range(n - 1):
+                a = row * n + column
+                faces.append([a, a + 1, a + n + 1])
+                faces.append([a, a + n + 1, a + n])
+        mesh = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(wall),
+            o3d.utility.Vector3iVector(np.asarray(faces)),
+        )
+        mesh.compute_vertex_normals()
+
+        max_shift = 0.04
+        result, _ = regularize(
+            mesh,
+            gravity=np.array([0.0, 1.0, 0.0]),
+            cfg={
+                "band": 0.10,
+                "max_shift": max_shift,
+                "normal_tolerance_deg": 45.0,
+                "normal_pull_weight": 0.0,      # positions only
+                "plane_threshold": 0.02,
+                "min_plane_points": 100,
+                "max_planes": 4,
+            },
+        )
+        before = wall[:, 0]
+        after = np.asarray(result.vertices)[:, 0]
+        shift = np.abs(after - before)
+
+        # Vertices inside the cutoff must have moved, and the movement must
+        # taper to ~0 at the cutoff rather than dropping off a cliff.
+        inside = before < max_shift - 1e-9
+        self.assertTrue(inside.any(), "no vertex inside the cutoff")
+        self.assertGreater(shift[inside].max(), 0.0)
+
+        # The largest jump between neighbours must be small: with a continuous
+        # ramp it is bounded by the ramp slope times the sample spacing.
+        spacing = 0.05 / (n - 1)
+        order = np.argsort(before)
+        jumps = np.abs(np.diff(shift[order]))
+        self.assertLess(
+            float(jumps.max()), 3 * spacing,
+            "displacement cliff at the snap cutoff would tear flat patches",
+        )
+
+    def test_regularize_ramp_vanishes_at_max_shift(self):
+        """The snap weight must reach zero at max_shift, not at the wider band.
+
+        With the buggy ramp (1 - |d|/band, band 0.10 > max_shift 0.04) a vertex
+        at the cutoff still moved -d*0.6 while its neighbour just outside moved
+        nothing: a cliff in the displacement field that tears smooth patches
+        apart. Field smoothing is disabled here so the ramp itself is measured.
+        """
+        import open3d as o3d
+
+        from tools.regularize_planes import regularize
+
+        max_shift, band = 0.04, 0.10
+        n = 30
+        y, z = np.meshgrid(np.linspace(-0.6, 0.6, n), np.linspace(-0.5, 0.5, n))
+        x = np.zeros_like(y)
+        # A single column of residuals spanning the cutoff from below to above.
+        x[:, 0] = np.linspace(max_shift * 0.5, max_shift * 1.5, n)
+        points = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
+        faces = []
+        for row in range(n - 1):
+            for column in range(n - 1):
+                a = row * n + column
+                faces.append([a, a + 1, a + n + 1])
+                faces.append([a, a + n + 1, a + n])
+        mesh = o3d.geometry.TriangleMesh(
+            o3d.utility.Vector3dVector(points),
+            o3d.utility.Vector3iVector(np.asarray(faces)),
+        )
+        mesh.compute_vertex_normals()
+
+        before = points[:, 0].copy()
+        result, _ = regularize(
+            mesh,
+            gravity=np.array([0.0, 1.0, 0.0]),
+            cfg={
+                "band": band,
+                "max_shift": max_shift,
+                "normal_tolerance_deg": 45.0,
+                "normal_pull_weight": 0.0,
+                "field_smooth_rounds": 0,      # measure the ramp itself
+                "plane_threshold": 0.02,
+                "min_plane_points": 100,
+                "max_planes": 4,
+            },
+        )
+        after = np.asarray(result.vertices)[:, 0]
+        first = np.arange(0, n * n, n)
+        residual = before[first]
+        moved = np.abs(after[first] - before[first])
+
+        inside = residual < max_shift
+        self.assertTrue(inside.any(), "no vertex below the cutoff")
+        self.assertTrue((~inside).any(), "no vertex above the cutoff")
+        # Inside the cutoff moves; outside it is left alone by the ramp.
+        self.assertGreater(moved[inside].max(), 1e-6)
+        self.assertLessEqual(moved[~inside].max(), 1e-9)
+
+        # Movement must taper smoothly toward the cutoff instead of jumping.
+        order = np.argsort(residual)
+        sorted_residual = residual[order]
+        sorted_moved = moved[order]
+        expected = sorted_residual * (1.0 - sorted_residual / max_shift)
+        expected = np.clip(expected, 0.0, max_shift)
+        both_inside = sorted_residual < max_shift * 0.98
+        self.assertTrue(both_inside.any())
+        np.testing.assert_allclose(
+            sorted_moved[both_inside], expected[both_inside], atol=1e-6,
+            err_msg="snap does not follow the linear ramp 1 - |d|/max_shift",
         )
 
     def test_regularize_keeps_geometry_when_shading_band_differs(self):

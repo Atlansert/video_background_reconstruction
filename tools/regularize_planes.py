@@ -20,9 +20,16 @@ Normal side (``--normal-pull-weight``): one weighted target normal is
 accumulated per vertex across every plane it belongs to, blended ONCE, oriented
 from the true geometric normal, and capped by ``--max-normal-drift-deg``. An
 earlier version blended per plane in a loop, so a vertex inside two or three
-overlapping bands (20.7% of them) was blended repeatedly toward different
-normals and ended up matching none -- 0.47% came out flipped (dark patches) and
-33% disagreed with the real surface, which added speckle to some walls.
+overlapping bands was blended repeatedly toward different normals and ended up
+matching none -- 0.47% came out flipped.
+
+IMPORTANT -- what actually reaches a render: ``tools/render_trajectory_video.py``
+calls ``mesh.compute_vertex_normals()`` after loading, which OVERWRITES whatever
+normals the PLY stores. Rendering a mesh with deliberately garbage normals gives
+a pixel-identical image (verified: mean abs diff 0.000000), so the normal field
+written here does NOT affect the walkthrough videos or any other Open3D render.
+Those depend on vertex POSITIONS only, which is why the position ramp below
+matters for the rendered result and the normal blend does not.
 
 Snapping is a blend: new = old + pull * (projection - old), pull ramping from
 1 at the plane core to 0 at the band edge. No vertex is removed, so color and
@@ -57,6 +64,50 @@ def _geometric_normals(vertices, faces):
     )
     mesh.compute_vertex_normals()
     return np.asarray(mesh.vertex_normals, dtype=np.float64)
+
+
+def _mesh_graph(faces, vertex_count):
+    """Edge lists for smoothing a per-vertex field over the mesh graph."""
+    pairs = set()
+    for a, b, c in np.asarray(faces):
+        pairs.update({(a, b), (b, a), (b, c), (c, b), (c, a), (a, c)})
+    source = np.fromiter((p[0] for p in pairs), dtype=np.int64, count=len(pairs))
+    target = np.fromiter((p[1] for p in pairs), dtype=np.int64, count=len(pairs))
+    degree = np.bincount(source, minlength=vertex_count).astype(np.float64)
+    return source, target, degree
+
+
+def _smooth_field(field, source, target, degree, rounds, blend, cap):
+    """Average a displacement field with its neighbours, then re-cap it.
+
+    Vertices of one smooth patch are often claimed by different planes and so
+    are displaced along different directions; the patch is torn apart and the
+    render shows fresh speckle exactly where the surface had been clean.
+    Blending the field across mesh edges makes neighbours move together, which
+    preserves the smoothness of a smooth patch without giving up the flattening
+    of a rough one.
+    """
+    out = field.copy()
+    for _ in range(int(rounds)):
+        accumulated = np.zeros_like(out)
+        np.add.at(accumulated, source, out[target])
+        mean = accumulated / np.maximum(degree[:, None], 1.0)
+        out = (1.0 - blend) * out + blend * mean
+    magnitude = np.linalg.norm(out, axis=1)
+    over = magnitude > cap
+    if over.any():
+        out[over] *= (cap / magnitude[over])[:, None]
+    return out
+
+
+def _field_roughness(field, source, target):
+    """Mean neighbour disagreement of a displacement field (mm).
+
+    A field that tears a flat patch apart shows a large value; a rigid
+    displacement of the same patch shows ~0.
+    """
+    delta = np.linalg.norm(field[source] - field[target], axis=1)
+    return float(delta.mean() * 1000.0)
 
 
 def regularize(mesh, gravity, cfg):
@@ -97,9 +148,14 @@ def regularize(mesh, gravity, cfg):
             in_band &= np.abs(geometric @ normal) >= normal_tolerance
         snap = in_band & (np.abs(distance) < max_shift)
         if snap.any():
-            # Fade: 1 at the plane core, 0 at the band edge, so a genuine
-            # protrusion near the plane is not torn off.
-            pull = 1.0 - (np.abs(distance[snap]) / band)
+            # The ramp must reach zero EXACTLY at max_shift, the radius that
+            # defines eligibility. Ramping over a wider band instead (the
+            # original 1 - |d|/band with band=0.10 > max_shift=0.04) left a
+            # vertex at the cutoff moving ~24 mm while its neighbour just
+            # outside moved nothing: a cliff in the displacement field that
+            # tears smooth patches into jagged ones and shows up in the render
+            # as fresh speckle on walls that were already flat.
+            pull = 1.0 - (np.abs(distance[snap]) / max_shift)
             shift = np.clip(-distance[snap] * pull, -max_shift, max_shift)
             before = float(np.sqrt((distance[snap] ** 2).mean()))
             vertices[snap] += shift[:, None] * normal[None]
@@ -116,6 +172,21 @@ def regularize(mesh, gravity, cfg):
                 "rms_after_mm": after * 1000.0,
             }
         )
+
+    # ---- phase 1b: make the displacement field neighbour-consistent -------
+    # Applied once by default: more passes over-smooth and start to round off
+    # genuine edges (measured pass rates 3/5 for one pass, 0/2 for three).
+    field_rounds = int(cfg.get("field_smooth_rounds", 1))
+    field_blend = float(cfg.get("field_smooth_blend", 0.5))
+    field_before = field_after = None
+    if field_rounds > 0 and moved_total:
+        source, target, degree = _mesh_graph(faces, len(vertices))
+        displacement = vertices - np.asarray(mesh.vertices, dtype=np.float64)
+        field_before = _field_roughness(displacement, source, target)
+        smoothed = _smooth_field(displacement, source, target, degree,
+                                 field_rounds, field_blend, max_shift)
+        field_after = _field_roughness(smoothed, source, target)
+        vertices = np.asarray(mesh.vertices, dtype=np.float64) + smoothed
 
     # ---- phase 2: normals, measured against the surface as it now is --------
     geometric = _geometric_normals(vertices, faces)
@@ -188,6 +259,10 @@ def regularize(mesh, gravity, cfg):
         "normal_pull_weight": normal_pull_weight,
         "normal_band": normal_band,
         "max_normal_drift_deg": max_drift_deg,
+        "field_smooth_rounds": field_rounds,
+        "field_smooth_blend": field_blend,
+        "field_roughness_before_mm": field_before,
+        "field_roughness_after_mm": field_after,
         "flipped_normals": flipped,
         "normal_drift_mean_deg": float(drift_deg.mean()),
         "normal_drift_p90_deg": float(np.percentile(drift_deg, 90)),
@@ -216,6 +291,15 @@ def main():
     parser.add_argument("--plane-threshold", type=float, default=0.03)
     parser.add_argument("--min-plane-points", type=int, default=2000)
     parser.add_argument("--max-planes", type=int, default=12)
+    parser.add_argument("--field-smooth-rounds", type=int, default=1,
+                        help="Laplacian passes over the displacement field. "
+                             "Vertices in one smooth patch are often claimed by "
+                             "different planes and get displaced differently, "
+                             "which tears the patch and adds render speckle; "
+                             "blending the field keeps neighbours together. "
+                             "0 disables it.")
+    parser.add_argument("--field-smooth-blend", type=float, default=0.5,
+                        help="weight of the neighbour average per pass (0-1).")
     parser.add_argument("--normal-band", type=float, default=None,
                         help="metres around a plane where vertex normals may be "
                              "re-blended. Defaults to --max-shift, so the shading "
@@ -251,6 +335,8 @@ def main():
                 "max_shift": args.max_shift,
                 "normal_tolerance_deg": args.normal_tolerance_deg,
                 "normal_pull_weight": args.normal_pull_weight,
+                "field_smooth_rounds": args.field_smooth_rounds,
+                "field_smooth_blend": args.field_smooth_blend,
                 "normal_band": args.normal_band,
                 "max_normal_drift_deg": args.max_normal_drift_deg,
                 "plane_threshold": args.plane_threshold,
@@ -280,6 +366,8 @@ def main():
         "band": args.band,
         "max_shift": args.max_shift,
         "normal_pull_weight": args.normal_pull_weight,
+        "field_smooth_rounds": args.field_smooth_rounds,
+        "field_smooth_blend": args.field_smooth_blend,
         "normal_band": args.normal_band or args.max_shift,
         "max_normal_drift_deg": args.max_normal_drift_deg,
         "flipped_normals": rounds[-1].get("flipped_normals"),

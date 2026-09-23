@@ -40,8 +40,20 @@ def estimate_gravity(extrinsics: np.ndarray | None) -> np.ndarray:
     return gravity / (np.linalg.norm(gravity) + 1e-12)
 
 
-def fit_planes(points, gravity, threshold=0.05, min_points=500, max_planes=12):
+def fit_planes(points, gravity, threshold=0.05, min_points=500, max_planes=12,
+               seed=0):
+    """Fit dominant planes with RANSAC.
+
+    ``seed`` makes the result reproducible. Open3D's ``segment_plane`` draws its
+    samples from a global RNG, so without seeding the same cloud yields a
+    different plane set on every call -- which made every before/after
+    comparison of downstream tools (``regularize_planes`` in particular)
+    irreproducible, since the plane set decides which vertices move where.
+    """
     import open3d as o3d
+
+    if seed is not None:
+        o3d.utility.random.seed(int(seed))
 
     points = np.asarray(points, dtype=np.float64)
     # Dense clouds (official-style, ~10M pts) only need a subset for RANSAC;

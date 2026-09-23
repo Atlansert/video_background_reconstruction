@@ -1,0 +1,17 @@
+{
+  "mesh": "/tmp/nofurn.ply",
+  "reconstruction": "/data/lzx/video_background_reconstruction/outputs/vggt_slam_baseline/slam/points_background.npz",
+  "input_video": "/data/lzx/video_background_reconstruction/video/001.mp4",
+  "frames": 1799,
+  "keyframes": 71,
+  "stride": 1,
+  "resolution": [
+    960,
+    540
+  ],
+  "fps": 29.97002997002997,
+  "seconds": 60.026633333333336,
+  "render_elapsed_seconds": 575.4279029369354,
+  "audio": true,
+  "ceiling_clamped_frames": 377
+}

@@ -1,0 +1,43 @@
+{
+  "mesh": "/data/lzx/video_background_reconstruction/outputs/vggt_slam_baseline/background_mesh_denoised_reg.ply",
+  "reconstruction": "/data/lzx/video_background_reconstruction/outputs/vggt_slam_baseline/slam/points_background.npz",
+  "masks": "/data/lzx/video_background_reconstruction/outputs/001_sam31_slam/masks",
+  "rule": {
+    "min_depth_ratio": 0.9,
+    "max_depth_ratio": 1.1,
+    "min_foreground_views": 3,
+    "max_background_views": 0
+  },
+  "votes": {
+    "vertices": 232422,
+    "observed_vertices": 232152,
+    "flagged_vertices": 37985,
+    "flagged_fraction": 0.16343117260844497,
+    "foreground_fraction_histogram": {
+      ">=0.3": 86520,
+      ">=0.5": 79502,
+      ">=0.7": 68492,
+      ">=0.9": 52614,
+      ">=1.0": 41723
+    },
+    "never_background_and_foreground": 41723
+  },
+  "sampling": {
+    "keyframes_used": 71,
+    "mask_shape": [
+      540,
+      960
+    ],
+    "missing_or_bad_masks": [],
+    "bad_mask_count": 0
+  },
+  "carve": {
+    "triangles_before": 444059,
+    "triangles_carved": 61966,
+    "triangles_after": 382093,
+    "components_pruned_triangles": 0,
+    "vertices_before": 232422,
+    "vertices_after": 205376
+  },
+  "output": "/tmp/nofurn.ply"
+}

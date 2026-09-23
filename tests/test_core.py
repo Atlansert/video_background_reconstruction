@@ -2089,5 +2089,145 @@ class SVORTrialTests(unittest.TestCase):
             self.assertGreater(int(frames_out[0][16, 16, 0]), 185)
 
 
+
+class SubtractForegroundTests(unittest.TestCase):
+    """The mesh carve rule and its projection convention.
+
+    These lock in the two things that were actually wrong when the tool was
+    first written, plus the rule itself, which is the whole point of the tool:
+    a fraction threshold cannot separate furniture from the wall behind it.
+    """
+
+    def test_never_background_rule_separates_furniture_from_wall_behind_it(self):
+        """The core claim, on synthetic votes.
+
+        Furniture is foreground in every view that sees it; a wall behind the
+        furniture is foreground in most views but background in at least one.
+        A fraction threshold ("foreground in >70% of views") flags both; the
+        never-background rule flags only the furniture. This is the whole
+        reason the tool does not use a fraction.
+        """
+        from tools.subtract_foreground import select_foreground
+
+        # 0: furniture body -- 10/10 foreground
+        # 1: wall behind it  -- 9/10 foreground, seen once (bg=1)
+        # 2: open wall       -- 0/10 foreground
+        # 3: never observed  -- no votes at all
+        foreground = np.array([10, 9, 0, 0])
+        background = np.array([0, 1, 10, 0])
+        observed = np.array([10, 10, 10, 0])
+
+        selected = select_foreground(foreground, background, observed)
+        np.testing.assert_array_equal(selected, [True, False, False, False])
+
+        # The fraction rule the tool deliberately avoids would also take the
+        # wall behind the furniture (9/10 = 90% > 70%).
+        fraction = np.divide(foreground, np.maximum(observed, 1))
+        self.assertGreater(fraction[1], 0.7)
+
+    def test_min_foreground_views_rejects_flicker_and_max_background_stays_strict(self):
+        from tools.subtract_foreground import select_foreground
+
+        foreground = np.array([1, 2, 3, 4, 5])
+        background = np.array([0, 0, 0, 0, 0])
+        observed = np.array([1, 2, 3, 4, 5])
+        selected = select_foreground(foreground, background, observed,
+                                     min_foreground_views=3)
+        np.testing.assert_array_equal(selected, [False, False, True, True, True])
+
+        # One single background sighting disqualifies: that is the rule.
+        loose = select_foreground(foreground, background + 1, observed,
+                                 min_foreground_views=3, max_background_views=0)
+        self.assertFalse(loose.any())
+
+    def test_vote_uses_model_space_depth_and_original_space_masks(self):
+        """Regression: mask and depth live in different resolutions.
+
+        Depth is MODEL-space (e.g. 8x8) and the mask is ORIGINAL-space (e.g.
+        16x16 via `original_coords`). The first version of the tool resized the
+        mask to the depth grid but kept indexing it with ORIGINAL coordinates,
+        which silently misattributed votes (flagged 0.33% of the baseline where
+        the correct answer is 16.34%).
+        """
+        from tools.subtract_foreground import accumulate_votes
+
+        model_size, original_size = 8, 16
+        # One vertex, straight ahead of a camera at the origin looking down +z.
+        vertex = np.array([[0.0, 0.0, 1.0]])
+        intrinsics = np.array([[[4.0, 0.0, 3.5],
+                                [0.0, 4.0, 3.5],
+                                [0.0, 0.0, 1.0]]])
+        data = {
+            "extrinsics": np.array([[[1.0, 0.0, 0.0, 0.0],
+                                     [0.0, 1.0, 0.0, 0.0],
+                                     [0.0, 0.0, 1.0, 0.0]]]),
+            "intrinsics": intrinsics,
+            "depth": np.ones((1, model_size, model_size, 1), dtype=np.float32),
+            "original_coords": np.array([[0.0, 0.0, float(model_size),
+                                          float(model_size),
+                                          float(original_size),
+                                          float(original_size)]]),
+            "frame_ids": np.array([0]),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            mask_path = Path(tmp) / "000000.png"
+            # Foreground ONLY at the correct original-space pixel. The vertex
+            # projects to model (3.5, 3.5) -> original (7, 7); indexing the mask
+            # with the model coords would read (3, 3) and get background.
+            mask = np.zeros((original_size, original_size), dtype=np.uint8)
+            mask[7, 7] = 255
+            cv2.imwrite(str(mask_path), mask)
+            foreground, background, observed, _ = accumulate_votes(
+                vertex, data, tmp
+            )
+        self.assertEqual(int(observed[0]), 1)
+        self.assertEqual(int(foreground[0]), 1)
+        self.assertEqual(int(background[0]), 0)
+
+    def test_wrong_sized_mask_is_reported_not_silently_zeroed(self):
+        """A mask dir at the wrong resolution must not masquerade as 'no fg'."""
+        from tools.subtract_foreground import load_masks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # 4x4 mask where a 16x16 is expected.
+            cv2.imwrite(str(Path(tmp) / "000000.png"),
+                        np.full((4, 4), 255, dtype=np.uint8))
+            cache, bad = load_masks(tmp, [0], (16, 16), {}, resample=None)
+            self.assertEqual(len(bad), 1)
+            self.assertFalse(cache[0].any())
+
+            # With a resample policy it is accepted instead.
+            cache2, bad2 = load_masks(tmp, [0], (16, 16), {},
+                                      resample=cv2.INTER_NEAREST)
+            self.assertEqual(bad2, [])
+            self.assertTrue(cache2[0].all())
+
+    def test_carve_requires_all_three_corners_and_keeps_the_rim(self):
+        """A flagged rim vertex must not delete the triangles around it."""
+        import open3d as o3d
+
+        from tools.subtract_foreground import carve_mesh
+
+        mesh = o3d.geometry.TriangleMesh()
+        mesh.vertices = o3d.utility.Vector3dVector(
+            np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+                      [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]])
+        )
+        # Two triangles; only vertex 4 is flagged, and it corners just one.
+        mesh.triangles = o3d.utility.Vector3iVector(
+            np.array([[0, 1, 2], [1, 4, 3]])
+        )
+        flagged = np.array([False, False, False, False, True])
+        subset, stats = carve_mesh(mesh, flagged)
+        # Nothing is removed: no triangle has ALL THREE corners flagged.
+        self.assertEqual(stats["triangles_carved"], 0)
+        self.assertEqual(stats["triangles_after"], 2)
+
+        # Flag the whole triangle and it goes.
+        flagged_all = np.array([True, True, True, False, True])
+        subset, stats = carve_mesh(mesh, flagged_all)
+        self.assertEqual(stats["triangles_carved"], 1)
+        self.assertEqual(stats["triangles_after"], 1)
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,7 @@
   1. ~~几何改进集中在 `geometry-prior-a` / `geometry-hybrid-b`，尚未合并回 `svor-trial`~~ **已完成（2026-09-22，`7336469`）**：A/B 的 `geometry.py` 与几何工具已合并进生产分支 `svor-trial`。
   2. ~~生产几何地板先验面只剩 0.7 m²，属 P0~~ **已修复（2026-09-22，`ec177e4` + redepth 重跑）**。复核确认原缺陷成立且比文档记录更严重：生产中丢失的是**全部**结构先验面（不只是地板），且合并层还有一个**共面重复发射**缺陷（44.59 → 89.18 m²）。修复后生产几何 `prior_survival.ratio = 1.0`，地板先验 53.71 m²。对比见 `deliverables/reports/p0_prior_fix/`（含 `REPORT.md` 与三版漫游视频）。
   3. **`main` 分支本地领先 origin 7 个提交未推送**；`CURRENT_STATE.md` 停在 9/18，9/19–9/22 的工作未同步进去。
-- **环境自检 + 测试是全绿基线**：`python -m vbr.cli doctor`（13 项）全过；`python -m pytest tests/ -q` → **71 passed**（P0 修复新增 3 项几何回归测试；此前 `geometry-hybrid-b` 68、`geometry-prior-a` 63、`svor-trial` 59）。接手第一步请重跑这两条。
+- **环境自检 + 测试是全绿基线**：`python -m vbr.cli doctor`（13 项）全过；`python -m pytest tests/ -q` → **80 passed**（P0 修复新增 3 项几何回归测试；此前 `geometry-hybrid-b` 68、`geometry-prior-a` 63、`svor-trial` 59）。接手第一步请重跑这两条。
 - **安全提醒**：`~/.git-credentials` 里的 GitHub PAT 曾经过聊天与镜像传输，建议在 GitHub 页面吊销并换新（见第 7 节）。
 
 ---
@@ -182,8 +182,19 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 - **墙面正则化**（`tools/regularize_planes.py`）：归因实验（纯灰光照 vs 无光照）证明"坑洼"是**法线抖动被方向光放大**（位置残差仅 6mm，法线偏差中位 21°）。修复 = 平面位置吸附（迭代 4 轮，残差 16→0.8–6.7mm）+ **法线按 band 全域混向平面法线**（21.1°→2.5°）；实现中修过两个缺陷（法线混合曾被 `max_shift` 错误限制；Open3D 写 PLY 需显式赋值法线）。家具/纹理经门控保护。
 - 三版视频已上传 Release `vggt-slam-baseline-20260922`。
 
-### 4.7 单元测试
-- `tests/test_core.py`：`svor-trial` 上 59 项；`geometry-prior-a` 63 项（含反平行去重/墙角延展/相机足迹/先验面存活等几何回归）；`geometry-hybrid-b` 68 项（另含细分中点共享/共面裁剪/纹理投影帧过滤/去噪分量过滤/平面正则化），全绿。
+### 4.7 网格去前景（用位姿 + mask 雕刻，9/23，`svor-trial`）
+- **动机**：基线网格是**故意用空掩膜**建的（4.6），家具被融进网格。本工作事后在网格上把它挖掉，不改动重建本身。
+- **工具**（`tools/subtract_foreground.py`）：把每个顶点用 NPZ 位姿投到 71 关键帧 → 读该像素 mask 与深度 → 投票 → 删除「**从未被看到背景**且被看到前景 ≥3 次」的顶点所属三角面。
+- **关键结论：不能用 mask 占比阈值**。「前景占比 ≥70% 就删」在基线上标出 ~25%，但在**控制组**（route A，本来无家具）上照样标出 **9.8%**——那是家具**背后**的墙：家具挡在前面，墙继承了家具的 mask。占比判据分不清「这面就是家具」与「家具大部分时间挡在它前面」。
+- **采用判据**：`background_views == 0 且 foreground_views >= 3`。依据是真表面终究会被看见（沙发背后的墙至少 1 帧直接可见，沙发本体则帧帧都是前景）。实测分离度：基线 **16.34%** vs 控制组 **0.40%**（**41×**）；占比阈值最好只有 ~10×。控制组的 0.40% 就是该判据诚实的误报率。
+- **结果**：三角面 444059 → 382093（−14.0%），顶点 232422 → 205376，边界边 4.05% → 5.85%。
+- **诚实的局限**：① 挖后留空洞——相机从未看到家具背面的表面，本就没有几何（补只能靠先验/扩散）；② 部分柜体存活（它在某些视角被看到了背景，判据保守保留）；③ 阈值是在这条 71 帧走位上标定的，换序列须用同一套「控制组」做法重新标定。
+- **坐标坑**（已写进 docstring + 单测）：深度是**模型空间**（518×294），mask 是**原图空间**（960×540，来自 `original_coords`）。深度用模型投影索引、mask 用原图信箱投影索引；第一版把 mask resize 到模型尺度却继续用原图坐标索引，命中率被静默错配成 0.33%。
+- **产物**：`deliverables/reports/foreground_removal/`（含 `REPORT.md`、同机位对比片 `compare_with_vs_without_furniture.mp4`、两版全长漫游、静帧表）；网格 `outputs/vggt_slam_baseline/background_mesh_nofurniture.ply`。
+
+### 4.8 单元测试
+- `tests/test_core.py`：`svor-trial` 上 **80 项全绿**（新增 `SubtractForegroundTests` 5 项）；`geometry-prior-a` 63 项；`geometry-hybrid-b` 68 项。
+- 去前景那 5 项做过**变异验证**（确认测试不是摆设）：去掉 `background` 条件 → 2 项失败；用模型坐标索引 mask → 坐标项失败；恢复后全绿。
 
 ---
 
@@ -206,10 +217,11 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 - `outputs/geometry_prior_a/`（381M）：`background_scene.glb` `background_mesh.ply` `structural_planes.ply` `interactive.html` `trajectory_video.mp4` `geometry_prior_report.json`
 - `outputs/geometry_hybrid_b/`（537M）：同上 + `geometry_hybrid_report.json` + `frames_video/`（1799 张纹理采样帧）
 - `outputs/vggt_slam_baseline/`（858M）：`pointcloud_original.ply`（1081 万点）`background_mesh_tsdf{,_decimated}.ply` `background_mesh_denoised{,_decimated,_reg}.ply` `background_scene.glb` + 三条轨迹视频
+  - 另有 `background_mesh_nofurniture.ply`（去前景雕刻结果，9/23）+ 同名 `.foreground_report.json`；见 4.7 与 `deliverables/reports/foreground_removal/REPORT.md`
 
 ### 5.3 `deliverables/`（git 跟踪，`svor-trial` 上维护）
 - 交付视频/GLB/PLY/掩膜包 + `manifest.json`（revision `c1955b5`）
-- `reports/`：`geometry_routes_3way.jpg`（A/B/P 三方对比）、`vggt_slam_baseline_compare.jpg`（原片 vs 基线）、各类评估 JSON
+- `reports/`：`geometry_routes_3way.jpg`（A/B/P 三方对比）、`vggt_slam_baseline_compare.jpg`（原片 vs 基线）、`foreground_removal/`（去前景：对比视频 + 报告）、各类评估 JSON
 - `svor_validation/`：官方核验产物（两轮复核报告、对比视频图）
 
 ---
@@ -348,7 +360,7 @@ python -m tools.publish_deliverables          # 提交 + push（另加 --no-push
 
 1. `git status`：确认分支与工作树状态；`git log --oneline -5` 看最近提交。**2026-09-22 后生产分支 `svor-trial` 已包含几何改进（`7336469`），几何工作可直接在生产分支进行。**
 2. `conda activate vbr && python -m vbr.cli doctor --config configs/vggt_slam.yaml` → 13/13 过。
-3. `python -m pytest tests/ -q` → **71 passed**。
+3. `python -m pytest tests/ -q` → **80 passed**。
 4. 看产物：
    - 生产视频 `outputs/001_sam31_slam/background_video.mp4`
    - B 路线漫游视频 `outputs/geometry_hybrid_b/trajectory_video.mp4`
@@ -374,6 +386,7 @@ python -m tools.publish_deliverables          # 提交 + push（另加 --no-push
 | `tools/rerun_svor_partial.py` / `tools/clip_repair_masks.py` / `tools/subtract_walls.py` | SVOR 分块重跑 / 掩膜裁回 / 减墙 |
 | `tools/rebuild_geometry_{prior,hybrid,from_background}.py` | 三条几何路线 |
 | `tools/{denoise_baseline_mesh,regularize_planes}.py` | 几何后处理（去噪 / 平面+法线正则化） |
+| `tools/subtract_foreground.py` | 网格去前景（SLAM 位姿 + mask 投票雕刻；**判据 = 从未背景 且 前景≥N**，详见 4.7 / REPORT.md） |
 | `tools/render_trajectory_video.py` | 轨迹漫游视频（任意网格 + 位姿；`--ceiling-clearance` 防黑屏） |
 | `tools/evaluate_inpainting.py` / `flow_metrics.py` | 视频质量评估（残留/闪烁/glitch/warping error） |
 | `tools/publish_deliverables.py` | 交付发布（复制→manifest→commit→push） |

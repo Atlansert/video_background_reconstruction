@@ -77,10 +77,13 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
   - 全部由同一条 SLAM 相机轨迹渲染、均启用 `--ceiling-clearance 0.35`（渲染口径一致）
 - Release **`regularize-fix-20260923`**（2026-09-23 新建）：墙面正则化修复的对比漫游（5 个 asset）
   - 页面：https://github.com/Atlansert/video_background_reconstruction/releases/tag/regularize-fix-20260923
-  - `walkthrough_regularized_fixed.mp4` / `walkthrough_regularized_shipped.mp4`
-  - `compare_regularize_2panel.mp4`（发布版 ｜ 修复版）、`compare_regularize_3panel.mp4`（发布版 ｜ 未正则化参照 ｜ 修复版）、`reg_shipped_vs_fixed.jpg`
-  - 修复内容：法线混合改为"跨平面累加单一目标 + 位移后重算 + 偏离封顶"，翻转法线 1093→0、偏离均值 10.14°→1.63°
-  - **验收勿用整帧高频能量**：发布版该指标更低（4.4898 vs 修复版 4.7150，未正则化参照 5.1910）是因为它压掉了真实表面起伏，指标奖励过度平滑。请看逐墙指标或直接看视频。详见 `deliverables/reports/regularize_fix/REPORT.md`
+  - `walkthrough_DENOISED_regularized.mp4`（当前工具，denoised 链路）/ `walkthrough_RAW_regularized.mp4`（当前工具，RAW 链路）/ `walkthrough_regularized_shipped.mp4`（原发布版，作对照）
+  - `compare_regularize_on_DENOISED.mp4` / `compare_regularize_on_RAW.mp4`（左：未正则化 ｜ 右：当前正则化）
+  - **2026-09-23 资产已刷新**：早期上传的 4 个 asset（`compare_regularize_2panel/3panel`、`reg_shipped_vs_fixed.jpg`、`walkthrough_regularized_fixed.mp4`）由过时代码产生，已替换
+  - 修复实质（经更正）：**`fit_planes` 播种**（未播种时 RANSAC 每次返回不同平面集，前/后对比不可复现——这是让该问题久攻不下的根因）＋ **snap ramp 在 `max_shift` 处归零**（旧版用 `band`=0.10 > `max_shift`=0.04，截止处仍有约 24mm 位移，位移场断崖撕裂平整 patch）＋ **位移场 Laplacian 平滑 1 次**
+  - 实测：RAW 墙面 RMS 17.25→12.39mm（平整 +0.0018、粗糙 −0.1071）；DENOISED 18.02→11.82mm（平整 −0.0236、粗糙 −0.1387）
+  - **注意渲染器不使用存储法线**：`render_trajectory_video.py` 载入后调用 `compute_vertex_normals()`，会覆盖 PLY 中的法线（用垃圾法线渲染得到逐像素相同图像）。故法线侧改动对任何渲染视频零影响，只有顶点位置有效。
+  - **验收勿用整帧高频能量**：该指标奖励过度平滑，压低真实表面起伏即可刷低数值。请看逐墙/分块指标或直接看视频。详见 `deliverables/reports/regularize_fix/REPORT_CORRECTED.md` 与 `COMPARISON_RAW_vs_DENOISED.md`
 
 > **渲染陷阱**：`tools/render_trajectory_video.py` 从 `--run-dir` 下的 `geometry_report.json`
 > 读天花板高度来做高机位钳制；若该文件不存在，工具只打印 `ceiling clamp skipped` 并照常出片，

@@ -39,5 +39,5 @@
     "vertices_before": 232422,
     "vertices_after": 205376
   },
-  "output": "/tmp/nofurn.ply"
+  "output": "/data/lzx/video_background_reconstruction/outputs/vggt_slam_baseline/background_mesh_nofurniture.ply"
 }

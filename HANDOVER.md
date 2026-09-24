@@ -207,7 +207,7 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 
 
 ### 4.9 GitHub Release 整理与最终交付（9/24）
-- **最终交付物 Release**：`final-deliverables-20260924`。上传**仅两件**：`background_mesh_no_furniture.ply`（v2 网格，26.3MB）+ `DELIVERABLES_MANIFEST.json`（8 个交付物的 repo 路径 + sha256 + 大小）。
+- **最终交付物 Release**：`final-deliverables-20260924`，3 个资产：`background_mesh_no_furniture.ply`（v2 网格，26.3MB）、`interactive.html`（可交互 3D 查看器，22.5MB）、`DELIVERABLES_MANIFEST.json`（8 个交付物的 repo 路径 + sha256 + 大小 + `release_asset` 标记）。
 - **为什么不把 6 个交付物也传上去**：它们**已随仓库跟踪**（`deliverables/`，`background_video.mp4` / `background_scene.glb` / `background_mesh.ply` / `mask_overlay{,_inpaint}.mp4` / `masks.tar.gz`），传 Release 只会同一文件存两份。清单里给了 repo 路径与校验和。
 - **清理（987MB → 252MB）**：
   - `svor-final-20260917` 删 3 个原始 VGGT 中间件共 **750MB**（`vggt_pointcloud_original_video.ply` 278MB、两个 quickstart `.pcd` 146+326MB）。删除前逐个比对 **本地 sha256 完全一致**，且三个都**未在任何 Release 正文中被引用**。它们占当时全部 release 资产的 76%。
@@ -216,6 +216,8 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 - **刻意保留**：`foreground-removal-20260923` 里 v1 的两版视频（`walkthrough_no_furniture.mp4`、`compare_with_vs_without_furniture.mp4`）——作为"被否决做法"的对照证据。
 - **校验口径**：所有 Release 资产的 sha256 与本地逐字节比对通过；每个 Release 正文只引用**确实存在**的资产（已用脚本核查无悬空引用）；所有 mp4 保持 faststart（`moov` 在 0.00%）。
 - **注意**：GitHub Release 资产的删除**不走 SSH 安全策略**（走 API），因此这类操作已按用户逐项确认后执行，不默认自作主张。
+- **`interactive.html` 上传前做过可用性核查**（不能只比字节就传）：Plotly **已内联**、无任何外部 `<script src=`（只有地图模板里的署名链接），所以**离线可开**；目标 `<div id>` 与 `Plotly.newPlot` 的 id 一致；payload 解码为 3 条 trace 且数值全 finite——背景点云 120000 点 / 补全网格 256476 点 / 相机轨迹 87 帧。**上传后又把下载回来的副本重新解码验证一遍**，确认不是坏文件。
+- **它此前没进 Release 的原因**：`outputs/` 被 gitignore，该查看器既未被 git 跟踪、首版清单里也只列了路径没上传。↑至此补齐。
 
 ### 4.8 单元测试
 - `tests/test_core.py`：`svor-trial` 上 **83 项全绿**（`SubtractForegroundTests` 5 项 + `RefuseWithMasksTests` 3 项）；`geometry-prior-a` 63 项；`geometry-hybrid-b` 68 项。

@@ -240,6 +240,12 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 - **产物**：`REPORT_V3.md`、`compare_v3_consensus_{2,3}panel.mp4`、
   `outputs/vggt_slam_baseline/trajectory_video_consensus.mp4`、
   `background_mesh_consensus.ply`（md5 `73ee15f67b4f26aea6add3b09d7ffb96`）。
+- **Release**：`foreground-removal-v3-20260924`（4 个资产 / 71.6MB）：
+  `compare_v3_consensus_3panel.mp4`（主验收片）、`compare_v3_consensus_2panel.mp4`、
+  `background_mesh_consensus.ply`、`REPORT_V3.md`。
+  上传后已**下载回来重新校验**（sha256 与本地一致、`moov` 在 0.00% 保持 faststart）。
+  注意 GitHub 上传要走 `uploads.github.com`（与 api.github.com **不同主机**），
+  用 api 基址拼会得到 `Name or service not known`。
 
 ### 4.9 GitHub Release 整理与最终交付（9/24）
 - **最终交付物 Release**：`final-deliverables-20260924`，3 个资产：`background_mesh_no_furniture.ply`（v2 网格，26.3MB）、`interactive.html`（可交互 3D 查看器，22.5MB）、`DELIVERABLES_MANIFEST.json`（8 个交付物的 repo 路径 + sha256 + 大小 + `release_asset` 标记）。

@@ -218,6 +218,9 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 - **注意**：GitHub Release 资产的删除**不走 SSH 安全策略**（走 API），因此这类操作已按用户逐项确认后执行，不默认自作主张。
 - **`interactive.html` 上传前做过可用性核查**（不能只比字节就传）：Plotly **已内联**、无任何外部 `<script src=`（只有地图模板里的署名链接），所以**离线可开**；目标 `<div id>` 与 `Plotly.newPlot` 的 id 一致；payload 解码为 3 条 trace 且数值全 finite——背景点云 120000 点 / 补全网格 256476 点 / 相机轨迹 87 帧。**上传后又把下载回来的副本重新解码验证一遍**，确认不是坏文件。
 - **它此前没进 Release 的原因**：`outputs/` 被 gitignore，该查看器既未被 git 跟踪、首版清单里也只列了路径没上传。↑至此补齐。
+- **视频也一并补齐（同日）**：`background_video.mp4`、`mask_overlay.mp4`、`mask_overlay_inpaint.mp4` 此前**只存在于 git 仓库，不在任何 Release 里**（最核心的交付视频一直没被挂出）。现已上传 `final-deliverables-20260924`，该 Release 共 6 个资产 / 120MB。
+- **同时修掉 faststart**：这三个视频的 `moov` 原本在 **99.59–99.97%** 处，即使从仓库下载也要几乎下完才能播。已 `-c copy -movflags +faststart` 无损重封装：**视频流 md5 与音频流 md5 与原文件完全一致**（已逐个校验），`moov` → 0.00%，并做**全片解码**验证（3 个视频各 1799 帧、零错误）。
+- **同步 `outputs/` 的生产副本**，使 HANDOVER 5.1 表里"md5 与 deliverables 一致"这条不变量恢复成立。**注意口径**：重封装只改容器布局，容器 md5 必然改变，所以溯源要看**流** md5（`background_video` video `074775463ec5995c2413d84b05713175` / audio `98962f5d2f9d2f49617dd76d03a37de3`），不要再用容器 md5 判断同一性。
 
 ### 4.8 单元测试
 - `tests/test_core.py`：`svor-trial` 上 **83 项全绿**（`SubtractForegroundTests` 5 项 + `RefuseWithMasksTests` 3 项）；`geometry-prior-a` 63 项；`geometry-hybrid-b` 68 项。
@@ -230,7 +233,7 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 ### 5.1 `outputs/001_sam31_slam/`（生产，1.9G）
 | 产物 | 说明 |
 | --- | --- |
-| `background_video.mp4` | 生产背景视频（1799 帧 / 60s / h264+aac）。md5 与 `deliverables/background_video.mp4` 一致 |
+| `background_video.mp4` | 生产背景视频（1799 帧 / 60s / h264+aac）。**与 `deliverables/` 的同名文件已同步为同一 faststart 封装**；溯源看**流** md5（video `074775463ec5995c2413d84b05713175`、audio `98962f5d2f9d2f49617dd76d03a37de3`），容器 md5 因重封装而变（原 `3892f717…` → 现 `e5b140ed…`）属预期 |
 | `background_scene.glb` / `background_mesh.ply` / `interactive.html` | 3D 交付物（来自 **redepth 路线**，9/20 重估） |
 | `background_scene_pre_redepth.glb` / `background_mesh_pre_redepth.ply` | redepth 前的首版几何（留档） |
 | `mask_overlay.mp4` / `mask_overlay_inpaint.mp4` | 掩膜预览 |

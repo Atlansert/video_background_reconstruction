@@ -191,6 +191,7 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 - **诚实的局限**：① 挖后留空洞——相机从未看到家具背面的表面，本就没有几何（补只能靠先验/扩散）；② 部分柜体存活（它在某些视角被看到了背景，判据保守保留）；③ 阈值是在这条 71 帧走位上标定的，换序列须用同一套「控制组」做法重新标定。
 - **坐标坑**（已写进 docstring + 单测）：深度是**模型空间**（518×294），mask 是**原图空间**（960×540，来自 `original_coords`）。深度用模型投影索引、mask 用原图信箱投影索引；第一版把 mask resize 到模型尺度却继续用原图坐标索引，命中率被静默错配成 0.33%。
 - **产物**：`deliverables/reports/foreground_removal/`（含 `REPORT.md`、同机位对比片 `compare_with_vs_without_furniture.mp4`、两版全长漫游、静帧表）；网格 `outputs/vggt_slam_baseline/background_mesh_nofurniture.ply`。
+- **Release**：`foreground-removal-20260923`（4 个资产：对比片 / 两版漫游 / 静帧表）。上传前用 `-c copy -movflags +faststart` 重封装——原始渲染的 `moov` 在文件 99.4% 处，浏览器要几乎下完才开播；重封装无损（视频流+音频流 md5 与原件一致），`moov` 落到第 36 字节，并逐字节回校过。**后续发布 mp4 到 Release 时请沿用 faststart。**
 
 ### 4.8 单元测试
 - `tests/test_core.py`：`svor-trial` 上 **80 项全绿**（新增 `SubtractForegroundTests` 5 项）；`geometry-prior-a` 63 项；`geometry-hybrid-b` 68 项。

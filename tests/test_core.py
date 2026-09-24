@@ -2229,5 +2229,106 @@ class SubtractForegroundTests(unittest.TestCase):
         self.assertEqual(stats["triangles_carved"], 1)
         self.assertEqual(stats["triangles_after"], 1)
 
+class RefuseWithMasksTests(unittest.TestCase):
+    """Masked re-fusion must REMOVE furniture, not hollow it out.
+
+    The carve approach (`tools/subtract_foreground.py`) deletes triangles from
+    an already-fused mesh. Measured by ray-casting at held-out keyframes it left
+    53% of the furniture standing, because a tabletop and the floor it rests on
+    are one continuous TSDF surface. These tests pin the property that actually
+    matters: a masked pixel must contribute NO depth to the fusion.
+    """
+
+    def test_masked_depth_is_zeroed_before_integration(self):
+        """The whole mechanism, tested without a GPU.
+
+        `fuse` must zero masked depth so Open3D skips those pixels. If it merely
+        skipped colour, or masked after integration, furniture would survive.
+        """
+        import types
+
+        from tools import refuse_with_masks
+
+        captured = {}
+
+        class FakeMesh:
+            def __getattr__(self, name):
+                return lambda *a, **k: None
+
+        class FakeVolume:
+            def integrate(self, rgbd, intrinsic, extrinsic):
+                captured.setdefault("depths", []).append(
+                    np.asarray(rgbd.depth).copy()
+                )
+
+            def extract_triangle_mesh(self):
+                return FakeMesh()
+
+        fake_o3d = types.SimpleNamespace()
+        fake_o3d.pipelines = types.SimpleNamespace(
+            integration=types.SimpleNamespace(
+                ScalableTSDFVolume=lambda **kw: FakeVolume(),
+                TSDFVolumeColorType=types.SimpleNamespace(RGB8=1),
+            )
+        )
+        fake_o3d.geometry = types.SimpleNamespace(
+            Image=lambda array: np.asarray(array),
+            RGBDImage=types.SimpleNamespace(
+                create_from_color_and_depth=lambda color, depth, **kw: types.SimpleNamespace(
+                    depth=np.asarray(depth)
+                )
+            ),
+        )
+        fake_o3d.camera = types.SimpleNamespace(
+            PinholeCameraIntrinsic=lambda *a, **k: None
+        )
+        import sys
+        real = sys.modules.get("open3d")
+        sys.modules["open3d"] = fake_o3d
+        try:
+            depth = np.full((1, 4, 4, 1), 2.0, dtype=np.float32)
+            foreground = np.zeros((1, 4, 4), dtype=bool)
+            foreground[0, 1:3, 1:3] = True      # 2x2 furniture block
+            intrinsics = np.array([[[2.0, 0, 1.5], [0, 2.0, 1.5], [0, 0, 1]]])
+            extrinsics = np.array([[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]]],
+                                  dtype=float)
+            coords = np.array([[0.0, 0.0, 4.0, 4.0, 4.0, 4.0]])
+            refuse_with_masks._model_rgb = lambda *a, **k: np.zeros((4, 4, 3), np.uint8)
+            refuse_with_masks.fuse(
+                depth, foreground, intrinsics, extrinsics, coords,
+                [Path("/dev/null")], {},
+            )
+        finally:
+            if real is not None:
+                sys.modules["open3d"] = real
+            else:
+                sys.modules.pop("open3d", None)
+
+        fused = captured["depths"][0]
+        # masked pixels must be exactly 0 (skipped); unmasked keep their depth
+        self.assertTrue((fused[1:3, 1:3] == 0).all(),
+                        "masked depth must be zeroed before integration")
+        self.assertTrue((fused[0, :] == 2.0).all())
+        self.assertTrue((fused[:, 0] == 2.0).all())
+
+    def test_empty_masks_are_rejected_rather_than_silently_unmasked(self):
+        """An empty/missing mask set must not quietly produce an unmasked build."""
+        from tools.refuse_with_masks import load_masks_model_space
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                load_masks_model_space(tmp, [0, 1], np.zeros((2, 6)), 8, 8)
+
+    def test_mask_dilate_flag_defaults_to_the_calibrated_value(self):
+        """Default must be the value the ray-cast ablation picked (4 px)."""
+        import inspect
+
+        from tools import refuse_with_masks
+
+        source = inspect.getsource(refuse_with_masks.main)
+        self.assertIn('"--mask-dilate", type=int, default=4', source)
+
+
+
 if __name__ == "__main__":
     unittest.main()

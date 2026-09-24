@@ -13,7 +13,7 @@
   1. ~~几何改进集中在 `geometry-prior-a` / `geometry-hybrid-b`，尚未合并回 `svor-trial`~~ **已完成（2026-09-22，`7336469`）**：A/B 的 `geometry.py` 与几何工具已合并进生产分支 `svor-trial`。
   2. ~~生产几何地板先验面只剩 0.7 m²，属 P0~~ **已修复（2026-09-22，`ec177e4` + redepth 重跑）**。复核确认原缺陷成立且比文档记录更严重：生产中丢失的是**全部**结构先验面（不只是地板），且合并层还有一个**共面重复发射**缺陷（44.59 → 89.18 m²）。修复后生产几何 `prior_survival.ratio = 1.0`，地板先验 53.71 m²。对比见 `deliverables/reports/p0_prior_fix/`（含 `REPORT.md` 与三版漫游视频）。
   3. **`main` 分支本地领先 origin 7 个提交未推送**；`CURRENT_STATE.md` 停在 9/18，9/19–9/22 的工作未同步进去。
-- **环境自检 + 测试是全绿基线**：`python -m vbr.cli doctor`（13 项）全过；`python -m pytest tests/ -q` → **80 passed**（P0 修复新增 3 项几何回归测试；此前 `geometry-hybrid-b` 68、`geometry-prior-a` 63、`svor-trial` 59）。接手第一步请重跑这两条。
+- **环境自检 + 测试是全绿基线**：`python -m vbr.cli doctor`（13 项）全过；`python -m pytest tests/ -q` → **83 passed**（P0 修复新增 3 项几何回归测试；此前 `geometry-hybrid-b` 68、`geometry-prior-a` 63、`svor-trial` 59）。接手第一步请重跑这两条。
 - **安全提醒**：`~/.git-credentials` 里的 GitHub PAT 曾经过聊天与镜像传输，建议在 GitHub 页面吊销并换新（见第 7 节）。
 
 ---
@@ -191,10 +191,22 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 - **诚实的局限**：① 挖后留空洞——相机从未看到家具背面的表面，本就没有几何（补只能靠先验/扩散）；② 部分柜体存活（它在某些视角被看到了背景，判据保守保留）；③ 阈值是在这条 71 帧走位上标定的，换序列须用同一套「控制组」做法重新标定。
 - **坐标坑**（已写进 docstring + 单测）：深度是**模型空间**（518×294），mask 是**原图空间**（960×540，来自 `original_coords`）。深度用模型投影索引、mask 用原图信箱投影索引；第一版把 mask resize 到模型尺度却继续用原图坐标索引，命中率被静默错配成 0.33%。
 - **产物**：`deliverables/reports/foreground_removal/`（含 `REPORT.md`、同机位对比片 `compare_with_vs_without_furniture.mp4`、两版全长漫游、静帧表）；网格 `outputs/vggt_slam_baseline/background_mesh_nofurniture.ply`。
+
+#### 4.7.1 v1 失败与 v2 修正（9/24）——**重要，接手请先读**
+- **用户反馈**：v1 效果很差——部分物体**只扣掉中间一块**、扣得**非常破碎**、还有**压根没扣掉**。
+- **根因**：v1 是在**已融合的网格**上事后雕刻。桌面与它脚下的地板在 TSDF 里是同一张连续曲面，事后规则分不清。三个症状同一根因。
+- **v1 实测**（射线投射，留出关键帧）：家具**残留 53.02%**——只去掉了 47%。
+- **v2**（`tools/refuse_with_masks.py`）：**融合前**把掩膜像素的深度置零，Open3D 跳过深度 0，家具在构造上就不存在。保留基线自己的位姿/深度/置信度，只换掩膜。
+- **v2 实测**：家具残留 **11.41%**（**4.6×** 改善）；基线 98.66% 是该度量有效性的对照。
+- **掩膜膨胀消融**（掩膜边缘外常仍是家具，会长出"领口"残留）：0px→21.92%、2px→16.78%、**4px→12.15%（采用）**、5px→18.13%（`masks/`）。默认用 `masks_inpaint` + `--mask-dilate 4`。
+- **度量方法**（关键，勿再用像素/顶点覆盖数）：`对角线/采样密度`会污染指标。改用**射线投射**：对家具像素投射，比较网格命中深度 vs 基线记录深度（基线融了家具，其深度即家具表面）——命中≈家具深度=仍在；明显更远=渲染到后面的墙=已去。脚本见 `/tmp/raycast*.py` 思路，方法已写入 `REPORT_V2.md`。
+- **诚实的局限**：① 挖除处留空洞（无命中 82%）——相机从未看到家具背面，补面属于先验/扩散的后续工作；② 残留 11.41% 非 0，主因是掩膜漏检与家具真正贴结构处，要再降需要更好的掩膜而不是更好的规则；③ 网格三角面 444059→683521（掩膜留洞后 TSDF 在洞缘生成更密几何，是移除的证据不是缺陷）。
+- **v1 处置**：`tools/subtract_foreground.py` 保留（其坐标约定有单测），但**不再是推荐路径**。
+- **测试**：新增 `RefuseWithMasksTests` 3 项，全库 **83 passed**；已做变异验证（把"置零深度"改成"置零颜色"→测试失败）。
 - **Release**：`foreground-removal-20260923`（4 个资产：对比片 / 两版漫游 / 静帧表）。上传前用 `-c copy -movflags +faststart` 重封装——原始渲染的 `moov` 在文件 99.4% 处，浏览器要几乎下完才开播；重封装无损（视频流+音频流 md5 与原件一致），`moov` 落到第 36 字节，并逐字节回校过。**后续发布 mp4 到 Release 时请沿用 faststart。**
 
 ### 4.8 单元测试
-- `tests/test_core.py`：`svor-trial` 上 **80 项全绿**（新增 `SubtractForegroundTests` 5 项）；`geometry-prior-a` 63 项；`geometry-hybrid-b` 68 项。
+- `tests/test_core.py`：`svor-trial` 上 **83 项全绿**（`SubtractForegroundTests` 5 项 + `RefuseWithMasksTests` 3 项）；`geometry-prior-a` 63 项；`geometry-hybrid-b` 68 项。
 - 去前景那 5 项做过**变异验证**（确认测试不是摆设）：去掉 `background` 条件 → 2 项失败；用模型坐标索引 mask → 坐标项失败；恢复后全绿。
 
 ---
@@ -361,7 +373,7 @@ python -m tools.publish_deliverables          # 提交 + push（另加 --no-push
 
 1. `git status`：确认分支与工作树状态；`git log --oneline -5` 看最近提交。**2026-09-22 后生产分支 `svor-trial` 已包含几何改进（`7336469`），几何工作可直接在生产分支进行。**
 2. `conda activate vbr && python -m vbr.cli doctor --config configs/vggt_slam.yaml` → 13/13 过。
-3. `python -m pytest tests/ -q` → **80 passed**。
+3. `python -m pytest tests/ -q` → **83 passed**。
 4. 看产物：
    - 生产视频 `outputs/001_sam31_slam/background_video.mp4`
    - B 路线漫游视频 `outputs/geometry_hybrid_b/trajectory_video.mp4`
@@ -387,7 +399,8 @@ python -m tools.publish_deliverables          # 提交 + push（另加 --no-push
 | `tools/rerun_svor_partial.py` / `tools/clip_repair_masks.py` / `tools/subtract_walls.py` | SVOR 分块重跑 / 掩膜裁回 / 减墙 |
 | `tools/rebuild_geometry_{prior,hybrid,from_background}.py` | 三条几何路线 |
 | `tools/{denoise_baseline_mesh,regularize_planes}.py` | 几何后处理（去噪 / 平面+法线正则化） |
-| `tools/subtract_foreground.py` | 网格去前景（SLAM 位姿 + mask 投票雕刻；**判据 = 从未背景 且 前景≥N**，详见 4.7 / REPORT.md） |
+| `tools/subtract_foreground.py` | 网格去前景 v1（事后雕刻；实测只去掉 47%，**已不推荐**，见 4.7.1） |
+| `tools/refuse_with_masks.py` | 网格去前景 v2（**推荐**）：融合前把掩膜深度置零，家具残留 11.41%（见 4.7.1 / REPORT_V2.md） |
 | `tools/render_trajectory_video.py` | 轨迹漫游视频（任意网格 + 位姿；`--ceiling-clearance` 防黑屏） |
 | `tools/evaluate_inpainting.py` / `flow_metrics.py` | 视频质量评估（残留/闪烁/glitch/warping error） |
 | `tools/publish_deliverables.py` | 交付发布（复制→manifest→commit→push） |

@@ -205,6 +205,18 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 - **测试**：新增 `RefuseWithMasksTests` 3 项，全库 **83 passed**；已做变异验证（把"置零深度"改成"置零颜色"→测试失败）。
 - **Release**：`foreground-removal-20260923`（4 个资产：对比片 / 两版漫游 / 静帧表）。上传前用 `-c copy -movflags +faststart` 重封装——原始渲染的 `moov` 在文件 99.4% 处，浏览器要几乎下完才开播；重封装无损（视频流+音频流 md5 与原件一致），`moov` 落到第 36 字节，并逐字节回校过。**后续发布 mp4 到 Release 时请沿用 faststart。**
 
+
+### 4.9 GitHub Release 整理与最终交付（9/24）
+- **最终交付物 Release**：`final-deliverables-20260924`。上传**仅两件**：`background_mesh_no_furniture.ply`（v2 网格，26.3MB）+ `DELIVERABLES_MANIFEST.json`（8 个交付物的 repo 路径 + sha256 + 大小）。
+- **为什么不把 6 个交付物也传上去**：它们**已随仓库跟踪**（`deliverables/`，`background_video.mp4` / `background_scene.glb` / `background_mesh.ply` / `mask_overlay{,_inpaint}.mp4` / `masks.tar.gz`），传 Release 只会同一文件存两份。清单里给了 repo 路径与校验和。
+- **清理（987MB → 252MB）**：
+  - `svor-final-20260917` 删 3 个原始 VGGT 中间件共 **750MB**（`vggt_pointcloud_original_video.ply` 278MB、两个 quickstart `.pcd` 146+326MB）。删除前逐个比对 **本地 sha256 完全一致**，且三个都**未在任何 Release 正文中被引用**。它们占当时全部 release 资产的 76%。
+  - `regularize-fix-20260923` 删 `walkthrough_regularized_shipped.mp4`（11.9MB）：与 `vggt-slam-baseline-20260922` 的 `trajectory_video_regularized.mp4` **sha256 完全相同**（`b35e0618…`），保留一份即可；该 Release 正文已改写并注明去处。
+  - 删两个**空壳 tag**（有 tag 无 release）：`presvor-baseline-20260911`、`svor-ema-baseline`。删前确认两者指向的提交（`25f3c99`、`afd353a`）**仍被 `main`/`svor-trial` 可达**，不丢历史。
+- **刻意保留**：`foreground-removal-20260923` 里 v1 的两版视频（`walkthrough_no_furniture.mp4`、`compare_with_vs_without_furniture.mp4`）——作为"被否决做法"的对照证据。
+- **校验口径**：所有 Release 资产的 sha256 与本地逐字节比对通过；每个 Release 正文只引用**确实存在**的资产（已用脚本核查无悬空引用）；所有 mp4 保持 faststart（`moov` 在 0.00%）。
+- **注意**：GitHub Release 资产的删除**不走 SSH 安全策略**（走 API），因此这类操作已按用户逐项确认后执行，不默认自作主张。
+
 ### 4.8 单元测试
 - `tests/test_core.py`：`svor-trial` 上 **83 项全绿**（`SubtractForegroundTests` 5 项 + `RefuseWithMasksTests` 3 项）；`geometry-prior-a` 63 项；`geometry-hybrid-b` 68 项。
 - 去前景那 5 项做过**变异验证**（确认测试不是摆设）：去掉 `background` 条件 → 2 项失败；用模型坐标索引 mask → 坐标项失败；恢复后全绿。

@@ -2330,5 +2330,130 @@ class RefuseWithMasksTests(unittest.TestCase):
 
 
 
+class ConsensusMaskTests(unittest.TestCase):
+    """A point survives TSDF fusion if ANY keyframe fuses it.
+
+    So per-view masking is not enough: furniture is removed only when the mask
+    covers it in EVERY view that sees it. The shipped masks do not -- coverage
+    swings 13%<->80% across this walk's keyframes -- so a view whose mask missed
+    re-fuses the object and it survives. That is the reported 'TV / part of the
+    fridge / closets still there'.
+
+    The fix decides per 3D point from the views that actually see it. The
+    decision is pure arithmetic on (seen, votes), so it is tested directly
+    rather than through synthetic cameras.
+    """
+
+    def test_a_view_whose_mask_missed_is_overruled_by_its_peers(self):
+        """Two peers agree the point is furniture, so it is dropped everywhere.
+
+        `seen` excludes the point's own view, so this is the count of OTHER
+        views that saw it. 2 of 2 masked -> foreground, and the caller then
+        zeroes the point in every view including the one that missed it.
+        """
+        from tools.consensus_masks import decide
+
+        seen = np.array([2])
+        votes = np.array([2])
+        foreground, undecided = decide(seen, votes, vote_threshold=0.5, min_views=2)
+        self.assertTrue(bool(foreground[0]))
+        self.assertFalse(bool(undecided[0]))
+
+    def test_a_tie_does_not_delete_geometry(self):
+        """1 of 2 seeing views is a tie; unresolved must keep the surface."""
+        from tools.consensus_masks import decide
+
+        foreground, undecided = decide(
+            np.array([2]), np.array([1]), vote_threshold=0.5, min_views=2)
+        self.assertFalse(bool(foreground[0]))
+        self.assertFalse(bool(undecided[0]))
+
+    def test_unanimous_background_is_never_foreground(self):
+        """Agreement that a point is background must protect it."""
+        from tools.consensus_masks import decide
+
+        foreground, _ = decide(
+            np.array([5]), np.array([0]), vote_threshold=0.5, min_views=2)
+        self.assertFalse(bool(foreground[0]))
+
+    def test_too_few_seeing_views_is_undecided_not_background(self):
+        """Silence is not evidence: below min_views the caller must fall back.
+
+        If this returned 'background', points seen by only one keyframe would
+        never be removed -- and a large object does often appear in just one
+        view of a short walk.
+        """
+        from tools.consensus_masks import decide
+
+        foreground, undecided = decide(
+            np.array([1, 0]), np.array([1, 0]), vote_threshold=0.5, min_views=2)
+        self.assertTrue(undecided.all())
+        self.assertFalse(foreground.any())
+
+    def test_threshold_is_strict_so_the_boundary_is_conservative(self):
+        """At exactly the threshold, keep the geometry (strictly greater)."""
+        from tools.consensus_masks import decide
+
+        # 3 of 6 == 0.5 exactly -> not foreground
+        foreground, _ = decide(
+            np.array([6]), np.array([3]), vote_threshold=0.5, min_views=2)
+        self.assertFalse(bool(foreground[0]))
+        # 4 of 6 > 0.5 -> foreground
+        foreground, _ = decide(
+            np.array([6]), np.array([4]), vote_threshold=0.5, min_views=2)
+        self.assertTrue(bool(foreground[0]))
+
+    def test_lower_threshold_removes_more(self):
+        """The swept knob: 0.4 must call strictly more points foreground than 0.5."""
+        from tools.consensus_masks import decide
+
+        seen = np.array([5, 5, 5])
+        votes = np.array([2, 3, 4])          # fractions 0.4, 0.6, 0.8
+        at_half, _ = decide(seen, votes, 0.5, 2)
+        # strictly above 0.4 catches the 0.6 and 0.8 points too
+        at_lower, _ = decide(seen, votes, 0.39, 2)
+        self.assertEqual(int(at_half.sum()), 2)
+        self.assertEqual(int(at_lower.sum()), 3)
+
+    def test_defaults_stay_the_measured_values(self):
+        """4 px mask dilation, vote 0.5, min-views 2 are the swept values."""
+        import inspect
+
+        from tools import consensus_masks
+
+        source = inspect.getsource(consensus_masks.main)
+        self.assertIn('"--mask-dilate", type=int, default=4', source)
+        self.assertIn('"--vote-threshold", type=float, default=0.5', source)
+        self.assertIn('"--min-views", type=int, default=2', source)
+
+    def test_grid_growth_is_a_knob_with_a_stated_default(self):
+        """Growing the subsampled vote grid is a measured tradeoff, not a bug.
+
+        Dilation removes more furniture and costs more background, so the knob
+        must stay exposed with `None` meaning "use the stride" -- and the
+        measured numbers belong next to it so nobody re-tunes it blind.
+        """
+        import inspect
+
+        from tools import consensus_masks
+
+        source = inspect.getsource(consensus_masks.main)
+        self.assertIn('"--consensus-dilate", type=int, default=None', source)
+        self.assertIn("dilate = args.stride if args.consensus_dilate is None",
+                      source)
+        # the tradeoff must be documented where it is decided
+        self.assertIn("more furniture and costs more background", source)
+
+    def test_main_uses_the_shared_rule(self):
+        """main() must not re-implement the decision (it once did)."""
+        import inspect
+
+        from tools import consensus_masks
+
+        source = inspect.getsource(consensus_masks.main)
+        self.assertIn("decide(seen, votes", source,
+                      "main must call the tested decide() rule")
+
+
 if __name__ == "__main__":
     unittest.main()

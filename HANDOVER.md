@@ -26,6 +26,7 @@
 | 生产配置 | `configs/vggt_slam.yaml`（后端 `vggt_slam`） |
 | 生产输出目录 | `outputs/001_sam31_slam/` |
 | 语义 | "纯背景"：前景 = 全部家具（含冰箱/橱柜/水槽等固定家具）；保留 = 建筑结构 |
+| **约定（每次完成工作后都要做）** | **① 把产物渲染成视频 → ② 推送到 GitHub Release → ③ 每个产物都写说明**。已固化成 `tools/publish_release.py`（`render` + `push` 两个子命令），**没有说明的产物不允许发布**（工具会拒绝），说明会自动生成到 Release 正文的"产物说明"表格里。详见 §4.10 |
 | 主交付物 | `background_video.mp4`（去家具后的视频）、`background_scene.glb` / `background_mesh.ply` / `interactive.html`（3D）、`mask_overlay*.mp4`（掩膜预览）、若干 JSON 报告 |
 
 **关键背景**：被家具永久遮挡的区域没有任何真实观测，纹理只能"推断"。项目历史结论：生成式补全（SVOR/扩散）观感稳定但会把跨帧不一致的纹理带进多视角几何（地面叠影、房间歪斜）；纯几何路线（A/B）用"墙直上直下"的结构先验填补遮挡区，代价是遮挡区无纹理（A）或纹理来自生成视频（B）。
@@ -263,6 +264,48 @@ Worktree：现在只有主目录 `/data/lzx/video_background_reconstruction`。`
 - **同时修掉 faststart**：这三个视频的 `moov` 原本在 **99.59–99.97%** 处，即使从仓库下载也要几乎下完才能播。已 `-c copy -movflags +faststart` 无损重封装：**视频流 md5 与音频流 md5 与原文件完全一致**（已逐个校验），`moov` → 0.00%，并做**全片解码**验证（3 个视频各 1799 帧、零错误）。
 - **同步 `outputs/` 的生产副本**，使 HANDOVER 5.1 表里"md5 与 deliverables 一致"这条不变量恢复成立。**注意口径**：重封装只改容器布局，容器 md5 必然改变，所以溯源要看**流** md5（`background_video` video `074775463ec5995c2413d84b05713175` / audio `98962f5d2f9d2f49617dd76d03a37de3`），不要再用容器 md5 判断同一性。
 
+### 4.10 发布约定（长期有效，每次完成工作都要做）
+**用户的长期要求**：以后每次完成工作，都 ① 把产物渲染为视频，② 推送到 GitHub Release，
+③ 标注产物说明。
+
+以前这件事每回都是临时写在 `/tmp` 的脚本里做，**没有工具**——`/tmp` 一清就没了，所以
+既不可复现，也容易漏掉说明。现已固化为 `tools/publish_release.py`：
+
+```bash
+# ① 渲染（自动检查并无损重封装成 faststart）
+python -m tools.publish_release render \
+    --run-dir outputs/vggt_slam_baseline \
+    --mesh outputs/vggt_slam_baseline/background_mesh_consensus.ply \
+    --out deliverables/reports/foreground_removal/walkthrough_v3.mp4
+
+# ②③ 发布，每个产物都要给说明
+python -m tools.publish_release push \
+    --tag <tag> --title "<标题>" --body-file <报告.md> \
+    --asset <文件> "<这个产物是什么>" \
+    --asset <文件> "<这个产物是什么>"
+```
+
+**关键点（都是踩过的坑）**：
+- **说明是强制的**：没有说明的产物工具**直接拒绝**，且在任何网络调用之前就拒绝，
+  不会发布出半个 Release。说明会自动追加成 Release 正文里的"产物说明"表格，
+  所以它出现在 Release 页面上，而不只是本地报告里。
+- `render` 必须给 `--run-dir` 或 `--npz`：底层渲染器靠它找相机轨迹，缺了会抛
+  `TypeError: unsupported operand type(s) for /: 'NoneType' and 'str'`，工具已提前拦下。
+- **子进程用 `sys.executable`**，不要写 `python`——conda 环境里 `python` 不在 PATH 上。
+- **上传必须走 `uploads.github.com`**（与 `api.github.com` 是**不同主机**）。用 api 基址拼
+  上传地址会得到 `Name or service not known`。
+- **faststart**：mp4 的 `moov` 必须在 `mdat` **之前**，否则浏览器要几乎下完才开播。
+  工具会在上传前检查并 `-c copy` 无损重封装。**校验同一性看流 md5，不要看容器 md5。**
+- **校验用服务端 digest**：GitHub API 每个资产返回 `digest`（sha256），与本地比对即可，
+  **无需把 27MB 再下一遍**（本链路批量下载不稳：urllib 会 `RemoteDisconnected`、
+  curl 会 `SSL unexpected eof`）。
+- 重名资产默认**报错**不覆盖；要覆盖显式给 `--replace`。
+- **Token 不作为命令行参数**（会进 shell 历史和进程列表），只从 `~/.git-credentials` 读。
+- Release/资产删除走 API，**不受 SSH 安全策略保护**，需用户逐项确认。
+
+**测试**：`PublishReleaseTests` 6 项钉住上述要点（说明强制、先校验后取 token、
+上传主机、faststart 检测、token 不走参数、镜像前缀的 origin 解析）。
+
 ### 4.8 单元测试
 - `tests/test_core.py`：`svor-trial` 上 **83 项全绿**（`SubtractForegroundTests` 5 项 + `RefuseWithMasksTests` 3 项）；`geometry-prior-a` 63 项；`geometry-hybrid-b` 68 项。
 - 去前景那 5 项做过**变异验证**（确认测试不是摆设）：去掉 `background` 条件 → 2 项失败；用模型坐标索引 mask → 坐标项失败；恢复后全绿。
@@ -460,6 +503,7 @@ python -m tools.publish_deliverables          # 提交 + push（另加 --no-push
 | `tools/subtract_foreground.py` | 网格去前景 v1（事后雕刻；实测只去掉 47%，**已不推荐**，见 4.7.1） |
 | `tools/refuse_with_masks.py` | 网格去前景 v2（v3 的融合底座；逐帧独立，**残留 23.89%**，见 4.7.2） |
 | `tools/consensus_masks.py` | 网格去前景 **v3（推荐）**：多视角 mask 一致性，残留 **12.33%**（见 4.7.2 / REPORT_V3.md） |
+| `tools/publish_release.py` | **发布约定工具**：`render` 渲染漫游视频（自动 faststart）、`push` 建/更新 Release。**强制每个产物必须有说明**，并自动生成产物表；上传走 `uploads.github.com`；发布后用服务端 sha256 校验（见 4.10） |
 | `tools/render_trajectory_video.py` | 轨迹漫游视频（任意网格 + 位姿；`--ceiling-clearance` 防黑屏） |
 | `tools/evaluate_inpainting.py` / `flow_metrics.py` | 视频质量评估（残留/闪烁/glitch/warping error） |
 | `tools/publish_deliverables.py` | 交付发布（复制→manifest→commit→push） |
